@@ -1,0 +1,12 @@
+whitelist = [...]
+
+while True:
+
+    req <- accept incoming HTTP(S) request
+    
+    if domain_of(req.url) not in whitelist:
+        respond with 403 Forbidden
+
+    second_req_socket <- open_tcp_stream(resolve(domain_of(req.url)))
+    
+    splice(req.tcp_socket, second_req_socket)
