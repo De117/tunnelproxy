@@ -4,6 +4,9 @@ from wsgiref.handlers import format_date_time
 
 from typing import List, Tuple, Dict, Set, Optional, Union, Any, cast, Type
 
+H11Event = Type[h11._events._EventBundle]  # TODO: double-check this
+H11Sentinel = Type[h11._util._SentinelBase] # TODO: double-check this
+
 MAX_RECV = 2**16
 TIMEOUT = 10
 
@@ -28,7 +31,7 @@ class TrioHTTPConnection:
         self.server_header = "whitelisting-proxy/1.0 ({h11.PRODUCT_ID})".encode()
         self._connection_id = next(TrioHTTPConnection._next_id)
 
-    async def send(self, event: h11.Event) -> None:
+    async def send(self, event: H11Event) -> None:
         if type(event) is h11.ConnectionClosed:
             assert self.conn.send(event) is None
             await self.shutdown_and_clean_up()
@@ -54,7 +57,7 @@ class TrioHTTPConnection:
             data = b""
         self.conn.receive_data(data)
 
-    async def next_event(self) -> Union[h11.Event, Type[h11._util.Sentinel]]:
+    async def next_event(self) -> Union[H11Event, H11Sentinel]:
         # Only two sentinels may be returned: h11.NEED_DATA and h11.PAUSED
         while True:
             event = self.conn.next_event()
