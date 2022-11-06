@@ -1,5 +1,4 @@
-import trio, h11, json
-from itertools import count
+import trio, h11, json, random
 from wsgiref.handlers import format_date_time
 from typing import List, Tuple, Optional, Union, Type
 
@@ -11,20 +10,22 @@ MAX_RECV = 2**16
 
 class TrioHTTPConnection:
     """
-    A wrapper around an h11.Connection, which hooks it up to a trio Stream.
+    A wrapper around a server h11.Connection, which hooks it up to a trio Stream.
 
     It:
       * reads incoming data into h11 events
       * sends any h11 events you give it
       * handles graceful shutdown
     """
-    _next_id = count()
 
     def __init__(self, stream: trio.abc.HalfCloseableStream, shutdown_timeout: float = 10):
+        """
+        shutdown_timeout: seconds to wait before closing the TCP connection, after sending EOF to the client
+        """
         self.stream = stream
         self.conn = h11.Connection(h11.SERVER)
-        self.server_header = "whitelisting-proxy/1.0 ({h11.PRODUCT_ID})".encode()
-        self._connection_id = next(TrioHTTPConnection._next_id)
+        self.server_header = f"whitelisting-proxy/1.0 ({h11.PRODUCT_ID})".encode()
+        self._connection_id = hex(random.getrandbits(64))[2:].zfill(16)
         self.shutdown_timeout = shutdown_timeout
 
     async def send(self, event: h11.Event) -> None:

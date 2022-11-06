@@ -1,69 +1,80 @@
 import trio, h11
 from adapter import TrioHTTPConnection
 
-def is_whitelisted(host: bytes, port: int) -> bool:
+
+def is_whitelisted(host: str, port: int) -> bool:
     whitelist = [
-        (b"example.com", 80),
-        (b"example.com", 443),
-        (b"www.example.com", 80),
-        (b"www.example.com", 443),
-        (b"localhost", 12345),
+        ("example.com", 80),
+        ("example.com", 443),
+        ("www.example.com", 80),
+        ("www.example.com", 443),
+        ("localhost", 1234),
+        ("localhost", 12345),
     ]
     return (host, port) in whitelist
 
 
 async def handle(stream: trio.SocketStream) -> None:
-    w = TrioHTTPConnection(stream)
+    start_time = trio.current_time()
+    w = TrioHTTPConnection(stream, shutdown_timeout=10)
 
     try:
         assert w.conn.states == {h11.CLIENT: h11.IDLE, h11.SERVER: h11.IDLE}
 
         REQUEST_TIMEOUT = 5
         CONNECTION_TIMEOUT = 5
+        client_request_completed = False  # to distinguish between the two timeouts
 
         with trio.fail_after(REQUEST_TIMEOUT):
-            # 1. Request (= start of request)
-            # 2. Data* (optional)
-            # 3. EndOfMessage (= end of request)
-            # at any moment: ConnectionClosed or exception
+            # Regular event sequence:
+            # -----------------------
+            #   1. Request (= start of request)
+            #   2. Data* (optional)
+            #   3. EndOfMessage (= end of request)
+            #
+            # At any moment: ConnectionClosed or exception
             e = await w.next_event()
-            w.info(f"Got event: {e}")
+            assert isinstance(e, (h11.Request, h11.ConnectionClosed)), "This assertion should always hold"
 
-            if type(e) is not h11.Request:
-                await w.send_error(400, "")  # TODO: how to describe this, exactly?
+            if isinstance(e, h11.ConnectionClosed):
+                w.info("Client closed the TCP connection")
                 return
 
             if e.method != b"CONNECT":
                 await w.send_error(405, f"Method {e.method!r} is not allowed")
                 return
 
-            target_host = e.target  # parse later
-
             # Ignore any HTTP body (h11.Data entries)
             # and read until h11.EndOfMessage
-            while type(e := await w.next_event()) is not h11.EndOfMessage:
-                w.info(f"Got event: {e}")
+            while type(await w.next_event()) is not h11.EndOfMessage:
                 pass
-            w.info(f"Got event: {e}")
+
+            target_host = e.target
 
         number_of_colons = target_host.count(b":")
         if number_of_colons > 1:
-            await w.send_error(400, "Malformed domain")
+            await w.send_error(400, f"Malformed hostname: {target_host!r}")
+            return
         elif number_of_colons == 1:
-            host, port_bytes = target_host.split(b":")
+            host_bytes, port_bytes = target_host.split(b":")
             try:
                 port = int(port_bytes)
                 assert port in range(65536)
             except (ValueError, AssertionError):
                 await w.send_error(400, f"Invalid port number: {port_bytes!r}")
+                return
         else:
-            host, port = target_host, 80
+            host_bytes, port = target_host, 80
+
+        host = host_bytes.decode("ascii")  # h11 ensures that this cannot break
+
+        client_request_completed = True
 
         if not is_whitelisted(host, port):
-            await w.send_error(403, "Host/port combination not allowed")
+            await w.send_error(403, f"Host/port combination not allowed: {host}:{port}")
+            return
 
-        w.info("Target host is allowed:" + str((host, port)))
-        w.info(f'Making TCP connection to {host.decode("ascii")}:{port}')  # TODO: handle edge cases in decoding / input charset?
+        w.info(f"Making TCP connection to {host}:{port}")
 
         with trio.fail_after(CONNECTION_TIMEOUT):
             try:
@@ -81,18 +92,26 @@ async def handle(stream: trio.SocketStream) -> None:
         w.info("TCP connection ended")
 
     except Exception as e:
-        w.info(f"Caught exception: {e}")
+        w.info(f"Handling exception: {e!r}")
         try:
-            if type(e) is h11.RemoteProtocolError:
+            if isinstance(e, h11.RemoteProtocolError):
                 await w.send_error(e.error_status_hint, str(e))
-            elif type(e) is trio.TooSlowError:
-                await w.send_error(408, "Client is too slow, terminating connection")
+            elif isinstance(e, trio.TooSlowError):
+                if not client_request_completed:
+                    await w.send_error(408, "Client is too slow, terminating connection")
+                else:
+                    await w.send_error(504, "TCP connection to server timed out")
             else:
+                w.info(f"Internal Server Error: {type(e)} {e}")
                 await w.send_error(500, str(e))
+            await w.shutdown_and_clean_up()
         except Exception as e:
             import traceback
             w.info("Error while responding with 500 Internal Server Error: " + "\n".join(traceback.format_tb(e.__traceback__)))
-            w.shutdown_and_clean_up()
+            await w.shutdown_and_clean_up()
+    finally:
+        end_time = trio.current_time()
+        w.info(f"Total time: {end_time - start_time:.6f}s")
 
 
 async def splice(a: trio.SocketStream, b: trio.SocketStream) -> None:
