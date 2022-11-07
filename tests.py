@@ -1,7 +1,8 @@
-import trio, random
+import trio, random, threading
 import trio.testing
-from hypothesis import given, settings
-from hypothesis.strategies import data, integers, binary
+from datetime import timedelta
+from hypothesis import given, settings, HealthCheck
+from hypothesis.strategies import data, integers, binary, floats
 
 from proxy import splice
 
@@ -31,3 +32,42 @@ async def test_splice(num_iterations: int, data):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(spliceit, near, far)
         nursery.start_soon(testit, client, server)
+
+
+from proxy import WhitelistingProxy, run_synchronously_cancellable_proxy
+
+# Thread scheduling varies, so we cannot reliably (nor quickly) test
+# if SynchronousWhitelistingProxy cancellation works, i.e. that:
+#
+#     1. the proxy _will_ be cancelled
+#     2. it will happen in no more than `stop_check_interval` seconds
+#
+# However, by putting the cancellation logic in a separate function,
+# we can get most of the way there.
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=timedelta(seconds=1))
+@given(stop_check_interval=floats(0.001, 10.000))
+async def test_cancellation_seen_promptly(stop_check_interval: float, autojump_clock):
+
+    host = "localhost"
+    port = 12349  # hopefully available
+
+    p = WhitelistingProxy(whitelist=(),)
+    stop = threading.Event()
+
+    proxy_cancelled = False
+
+    async def runner() -> None:
+        nonlocal proxy_cancelled
+        await run_synchronously_cancellable_proxy(p, host, port, stop, stop_check_interval)
+        proxy_cancelled = True
+
+    async def killer() -> None:
+        await trio.to_thread.run_sync(stop.set)  # from another thread, as in SynchronousWhitelistingProxy
+        assert stop.is_set(), "This should always be the case, as it's a threading.Event"
+        await trio.sleep(1.001 * stop_check_interval)
+        assert proxy_cancelled, "After `stop_check_interval`, the proxy should have been cancelled"
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(runner)
+        nursery.start_soon(killer)

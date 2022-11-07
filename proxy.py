@@ -179,6 +179,32 @@ class WhitelistingProxy:
         await trio.serve_tcp(h, port, host=host)
 
 
+async def run_synchronously_cancellable_proxy(
+        proxy: WhitelistingProxy,
+        host: str,
+        port: int,
+        stop: threading.Event,
+        stop_check_interval: float,
+    ) -> None:
+    """
+    Runs the proxy, until cancelled through the `stop` event.
+    It checks the event every `stop_check_interval` seconds.
+
+    This function is meant for use primarily in the synchronous world:
+    while it _can_ be used just fine in Trio, a plain trio.CancelScope
+    is simpler and more idiomatic.
+    """
+
+    async def listen_for_stop(cancel_scope: trio.CancelScope) -> None:
+        while not stop.is_set():
+            await trio.sleep(stop_check_interval)
+        cancel_scope.cancel()
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(listen_for_stop, nursery.cancel_scope)
+        nursery.start_soon(proxy.listen, host, port)
+
+
 class SynchronousWhitelistingProxy:
     """
     A wrapper around WhitelistingProxy which runs it in a separate
@@ -197,25 +223,14 @@ class SynchronousWhitelistingProxy:
         Parameters are similar to WhitelistingProxy. `stop_check_interval` is new:
         this is how long (in seconds) it may take to stop the proxy.
         """
-        self._proxy = WhitelistingProxy(is_whitelisted)
+        self._proxy = WhitelistingProxy(whitelist)
         self._started = False
         self._stop = threading.Event()
-
-        async def runner(proxy: WhitelistingProxy, stop: threading.Event) -> None:
-
-            async def listen_for_stop(cancel_scope: trio.CancelScope) -> None:
-                while not stop.is_set():
-                    await trio.sleep(stop_check_interval)
-                cancel_scope.cancel()
-
-            async with trio.open_nursery() as nursery:
-                nursery.start_soon(listen_for_stop, nursery.cancel_scope)
-                nursery.start_soon(proxy.listen, host, port)
 
         self._thread = threading.Thread(
             name=f"SynchronousWhitelistingProxy-on-http://{host}:{port}/",
             target=trio.run,
-            args=(runner, self._proxy, self._stop),
+            args=(run_synchronously_cancellable_proxy, self._proxy, host, port, self._stop, stop_check_interval),
         )
 
     def start(self) -> None:
