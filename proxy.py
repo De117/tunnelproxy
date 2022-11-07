@@ -1,20 +1,15 @@
 import trio, h11
 from adapter import TrioHTTPConnection
+from functools import partial
+from typing import Callable
 
 
-def is_whitelisted(host: str, port: int) -> bool:
-    whitelist = [
-        ("example.com", 80),
-        ("example.com", 443),
-        ("www.example.com", 80),
-        ("www.example.com", 443),
-        ("localhost", 1234),
-        ("localhost", 12345),
-    ]
-    return (host, port) in whitelist
+async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int], bool]) -> None:
+    """
+    Handles one HTTP CONNECT request from start to end, allowing only whitelisted connections.
 
-
-async def handle(stream: trio.SocketStream) -> None:
+    `is_whitelisted` must take hostname (str) and port (int).
+    """
     start_time = trio.current_time()
     w = TrioHTTPConnection(stream, shutdown_timeout=10)
 
@@ -154,13 +149,51 @@ async def forward(source: trio.SocketStream, sink: trio.SocketStream, cancel_sco
     return
 
 
-async def serve(port):
-    print("listening on http://localhost:{}".format(port))
-    try:
-        await trio.serve_tcp(handle, port)
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt - shutting down")
+class WhitelistingProxy:
+    """
+    An HTTP forwards proxy which only allows connections from a whitelist.
+
+    Runs on a trio event loop.
+    """
+
+    def __init__(self, is_whitelisted: Callable[[str, int], bool]):
+        """
+        Passing a function lets you determine that however you like.
+        If using a fixed whitelist, use something like
+
+            my_whitelist = [...]
+            proxy = WhitelistingProxy(lambda h, p: (h, p) in my_whitelist)
+        """
+        self.is_whitelisted = is_whitelisted
+
+    async def listen(self, host: str, port: int) -> None:
+        """
+        Listen for incoming TCP connections.
+
+        Parameters:
+          host: the host interface to listen on
+          port: the port to listen on
+        """
+        print(f"Listening on http://{host}:{port}")
+        h = partial(handle, is_whitelisted=self.is_whitelisted)
+        await trio.serve_tcp(h, port, host=host)
+
+
+def is_whitelisted(host: str, port: int) -> bool:
+    whitelist = [
+        ("example.com", 80),
+        ("example.com", 443),
+        ("www.example.com", 80),
+        ("www.example.com", 443),
+        ("localhost", 1234),
+        ("localhost", 12345),
+    ]
+    return (host, port) in whitelist
 
 
 if __name__ == "__main__":
-    trio.run(serve, 8080)
+    try:
+        proxy = WhitelistingProxy(is_whitelisted)
+        trio.run(proxy.listen, "0.0.0.0", 8080)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt - shutting down")
