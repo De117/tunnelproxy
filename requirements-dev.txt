@@ -1,0 +1,5 @@
+trio==0.21.0
+h11==0.14.0
+hypothesis==6.46.7
+pytest==7.1.2
+pytest-trio==0.7.0
