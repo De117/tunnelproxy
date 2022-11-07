@@ -199,14 +199,12 @@ class SynchronousWhitelistingProxy:
         """
         self._proxy = WhitelistingProxy(is_whitelisted)
         self._started = False
-        # Oddly, threading.Event does not work properly without blocked threads.
-        # But a semaphore works just fine.
-        self._stop = threading.Semaphore(0)
+        self._stop = threading.Event()
 
-        async def runner(proxy: WhitelistingProxy, stop: threading.Semaphore) -> None:
+        async def runner(proxy: WhitelistingProxy, stop: threading.Event) -> None:
 
             async def listen_for_stop(cancel_scope: trio.CancelScope) -> None:
-                while not stop.acquire(blocking=False):
+                while not stop.is_set():
                     await trio.sleep(stop_check_interval)
                 cancel_scope.cancel()
 
@@ -228,7 +226,7 @@ class SynchronousWhitelistingProxy:
 
     def stop(self) -> None:
         """Stop the proxy, if not already stopped."""
-        self._stop.release()
+        self._stop.set()
         self._thread.join()
 
 
