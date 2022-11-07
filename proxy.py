@@ -1,4 +1,4 @@
-import trio, h11
+import trio, h11, threading
 from adapter import TrioHTTPConnection
 from functools import partial
 from typing import Callable, Union, Iterable, Tuple
@@ -179,6 +179,59 @@ class WhitelistingProxy:
         await trio.serve_tcp(h, port, host=host)
 
 
+class SynchronousWhitelistingProxy:
+    """
+    A wrapper around WhitelistingProxy which runs it in a separate
+    thread, so you can use it from a traditional threaded program.
+
+    Can stop, but not gently. (It kills all TCP connections.)
+    """
+
+    def __init__(self,
+            host: str,
+            port: int,
+            whitelist: Union[Iterable[Tuple[str, int]], Callable[[str, int], bool]],
+            stop_check_interval: float = 0.010,
+            ):
+        """
+        Parameters are similar to WhitelistingProxy. `stop_check_interval` is new:
+        this is how long (in seconds) it may take to stop the proxy.
+        """
+        self._proxy = WhitelistingProxy(is_whitelisted)
+        self._started = False
+        # Oddly, threading.Event does not work properly without blocked threads.
+        # But a semaphore works just fine.
+        self._stop = threading.Semaphore(0)
+
+        async def runner(proxy: WhitelistingProxy, stop: threading.Semaphore) -> None:
+
+            async def listen_for_stop(cancel_scope: trio.CancelScope) -> None:
+                while not stop.acquire(blocking=False):
+                    await trio.sleep(stop_check_interval)
+                cancel_scope.cancel()
+
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(listen_for_stop, nursery.cancel_scope)
+                nursery.start_soon(proxy.listen, host, port)
+
+        self._thread = threading.Thread(
+            name=f"SynchronousWhitelistingProxy-on-http://{host}:{port}/",
+            target=trio.run,
+            args=(runner, self._proxy, self._stop),
+        )
+
+    def start(self) -> None:
+        """Start the proxy, if not already started."""
+        if not self._started:
+            self._thread.start()
+            self._started = True
+
+    def stop(self) -> None:
+        """Stop the proxy, if not already stopped."""
+        self._stop.release()
+        self._thread.join()
+
+
 def is_whitelisted(host: str, port: int) -> bool:
     whitelist = [
         ("example.com", 80),
@@ -193,7 +246,14 @@ def is_whitelisted(host: str, port: int) -> bool:
 
 if __name__ == "__main__":
     try:
-        proxy = WhitelistingProxy(is_whitelisted)
-        trio.run(proxy.listen, "0.0.0.0", 8080)
+        # On trio (async)
+        #proxy = WhitelistingProxy(is_whitelisted)
+        #trio.run(proxy.listen, "0.0.0.0", 8080)
+
+        # With wrapper (sync)
+        proxy = SynchronousWhitelistingProxy("localhost", 8080, is_whitelisted)
+        proxy.start()
+        import time; time.sleep(5)
+        proxy.stop()
     except KeyboardInterrupt:
         print("KeyboardInterrupt - shutting down")
