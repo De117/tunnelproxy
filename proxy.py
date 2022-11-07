@@ -1,7 +1,7 @@
 import trio, h11
 from adapter import TrioHTTPConnection
 from functools import partial
-from typing import Callable
+from typing import Callable, Union, Iterable, Tuple
 
 
 async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int], bool]) -> None:
@@ -156,15 +156,15 @@ class WhitelistingProxy:
     Runs on a trio event loop.
     """
 
-    def __init__(self, is_whitelisted: Callable[[str, int], bool]):
+    def __init__(self, whitelist: Union[Iterable[Tuple[str, int]], Callable[[str, int], bool]]):
         """
-        Passing a function lets you determine that however you like.
-        If using a fixed whitelist, use something like
-
-            my_whitelist = [...]
-            proxy = WhitelistingProxy(lambda h, p: (h, p) in my_whitelist)
+        `whitelist` is either a list of (host, port) pairs,
+        or a predicate function taking a host and a port.
         """
-        self.is_whitelisted = is_whitelisted
+        if not callable(whitelist):
+            self.is_whitelisted = lambda host, port: (host, port) in set(whitelist)
+        else:
+            self.is_whitelisted = whitelist
 
     async def listen(self, host: str, port: int) -> None:
         """
