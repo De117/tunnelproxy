@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "allowed_hosts": [
+    "example.com:80",
+    "example.com:443",
+    "www.example.com:80",
+    "www.example.com:443",
+    "localhost:1234",
+    "localhost:12345"
+  ]
+}

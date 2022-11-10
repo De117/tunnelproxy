@@ -1,7 +1,10 @@
 import trio, h11, threading
 from adapter import TrioHTTPConnection
 from functools import partial
-from typing import Callable, Union, Iterable, Tuple
+from typing import Callable, Union, Iterable, Tuple, Set
+
+import signal, re, argparse, sys, json
+from dataclasses import dataclass
 
 
 async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int], bool]) -> None:
@@ -44,24 +47,12 @@ async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int],
             while type(await w.next_event()) is not h11.EndOfMessage:
                 pass
 
-            target_host = e.target
+            target_host = e.target.decode("ascii")  # h11 ensures that this cannot break
 
-        number_of_colons = target_host.count(b":")
-        if number_of_colons > 1:
+        try:
+            host, port = parse_host_and_port(target_host)
+        except ValueError:
             await w.send_error(400, f"Malformed hostname: {target_host!r}")
-            return
-        elif number_of_colons == 1:
-            host_bytes, port_bytes = target_host.split(b":")
-            try:
-                port = int(port_bytes)
-                assert port in range(65536)
-            except (ValueError, AssertionError):
-                await w.send_error(400, f"Invalid port number: {port_bytes!r}")
-                return
-        else:
-            host_bytes, port = target_host, 80
-
-        host = host_bytes.decode("ascii")  # h11 ensures that this cannot break
 
         client_request_completed = True
 
@@ -73,7 +64,7 @@ async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int],
 
         with trio.fail_after(CONNECTION_TIMEOUT):
             try:
-                target_stream = await trio.open_tcp_stream(host, port)
+                target_stream = await trio.open_tcp_stream(host, int(port))  # takes _exactly_ int
             except OSError as e:
                 await w.send_error(502, "TCP connection to server failed")
                 return
@@ -148,6 +139,12 @@ async def forward(source: trio.SocketStream, sink: trio.SocketStream, cancel_sco
     cancel_scope.cancel()
     return
 
+################################################################
+#                  User-friendly objects
+################################################################
+
+WhitelistOrPredicate = Union[Iterable[Tuple[str, int]], Callable[[str, int], bool]]
+
 
 class WhitelistingProxy:
     """
@@ -156,15 +153,12 @@ class WhitelistingProxy:
     Runs on a trio event loop.
     """
 
-    def __init__(self, whitelist: Union[Iterable[Tuple[str, int]], Callable[[str, int], bool]]):
+    def __init__(self, whitelist: WhitelistOrPredicate):
         """
         `whitelist` is either a list of (host, port) pairs,
         or a predicate function taking a host and a port.
         """
-        if not callable(whitelist):
-            self.is_whitelisted = lambda host, port: (host, port) in set(whitelist)
-        else:
-            self.is_whitelisted = whitelist
+        self.update(whitelist)
 
     async def listen(self, host: str, port: int) -> None:
         """
@@ -177,6 +171,18 @@ class WhitelistingProxy:
         print(f"Listening on http://{host}:{port}")
         h = partial(handle, is_whitelisted=self.is_whitelisted)
         await trio.serve_tcp(h, port, host=host)
+
+    def update(self, whitelist: WhitelistOrPredicate) -> None:
+        """
+        Update the whitelist.
+
+        `whitelist` is either a list of (host, port) pairs,
+        or a predicate function taking a host and a port.
+        """
+        if not callable(whitelist):
+            self.is_whitelisted = lambda host, port: (host, port) in set(whitelist)
+        else:
+            self.is_whitelisted = whitelist
 
 
 async def run_synchronously_cancellable_proxy(
@@ -244,29 +250,138 @@ class SynchronousWhitelistingProxy:
         self._stop.set()
         self._thread.join()
 
+################################################################
+#                  Configuration parsing
+################################################################
 
-def is_whitelisted(host: str, port: int) -> bool:
-    whitelist = [
-        ("example.com", 80),
-        ("example.com", 443),
-        ("www.example.com", 80),
-        ("www.example.com", 443),
-        ("localhost", 1234),
-        ("localhost", 12345),
-    ]
-    return (host, port) in whitelist
+class Port(int):
+    def __init__(self, n: Union[int, str]):
+        try:
+            if isinstance(n, str):
+                n = int(n)
+        except ValueError:
+            raise ValueError(f"Invalid port number: {n}")
+
+        if n not in range(65536):
+            raise ValueError(f"Invalid port number: {n}")
+
+class Domain(str):
+    def __init__(self, s: str):
+        # Grammar taken from RFC 1035, §2.3.1
+        # (The "subdomain" node, because we do not allow the empty string.)
+        letter_digit_hyphen = "[a-zA-Z0-9-]"
+        letter_digit = "[a-zA-Z0-9]"
+        letter = "[a-zA-Z]"
+        label = f"{letter}({letter_digit_hyphen}*{letter_digit}+)*"
+        domain = f"({label}\.)*{label}"
+
+        if not re.match(f"^{domain}$", s):
+            raise ValueError("Malformed domain: " + s)
+
+@dataclass
+class Configuration:
+    version: int
+    whitelist: Set[Tuple[Domain, Port]]
+
+
+def parse_host_and_port(s: str) -> Tuple[Domain, Port]:
+    """
+    Parses a "host[:port]"i string into a (host, port) pair.
+    Default port is 80.
+
+    Raises ValueError if parsing fails.
+    """
+    if ":" in s:
+        h, p = s.split(":", maxsplit=1)
+        return Domain(h), Port(p)
+    else:
+        return Domain(s), Port(80)
+
+
+def parse_configuration_v1(b: bytes) -> Configuration:
+    """
+    Parses configuration. Raises ValueError if it fails.
+    """
+    try:
+        config = json.loads(b)
+        assert "version" in config, "Missing field: version"
+        assert config["version"] == 1, "Unsupported version"
+        assert "allowed_hosts" in config, "Missing field: allowed_hosts"
+        hostnames = config["allowed_hosts"]
+        assert isinstance(hostnames, list), "Malformed field: hostname"
+        whitelist = {parse_host_and_port(h) for h in hostnames}
+        return Configuration(version=1, whitelist=whitelist)
+    except (json.JSONDecodeError, AssertionError, ValueError) as e:
+        raise ValueError("Could not parse v1 configuration") from e
+
+
+def load_configuration_from_file(filename: str) -> Configuration:
+    """
+    Loads configuration from file. Raises RuntimeError if it fails.
+    """
+    try:
+        with open(filename, "rb") as f:
+            return parse_configuration_v1(f.read())
+    except (FileNotFoundError, ValueError) as e:
+        raise RuntimeError(f"Could not open or parse configuration file: {e}") from e
 
 
 if __name__ == "__main__":
-    try:
-        # On trio (async)
-        #proxy = WhitelistingProxy(is_whitelisted)
-        #trio.run(proxy.listen, "0.0.0.0", 8080)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--configuration-file", required=True,
+        help="Path to configuration file."
+        'Format: {"version": 1, "allowed_hosts": ["foo.com:443", ...]}'
+    )
+    parser.add_argument("--address", default="localhost", help="IP address to listen on")
+    parser.add_argument("--port", default=8080, type=int, choices=range(65536), help="TCP port to listen on")
+    conf = parser.parse_args()
+    load_config = partial(load_configuration_from_file, conf.configuration_file)
 
-        # With wrapper (sync)
-        proxy = SynchronousWhitelistingProxy("localhost", 8080, is_whitelisted)
+    CONFIGURATION = load_config()
+
+    # SYNC
+    if False:
+        CONFIGURATION_LOCK = threading.Lock()
+
+        def reload_config(*_):
+            try:
+                x = load_config()
+            except RuntimeError as e:
+                print(e, file=sys.stderr)
+            else:
+                global CONFIGURATION, CONFIGURATION_LOCK
+                with CONFIGURATION_LOCK:
+                    CONFIGURATION = x
+                print("Reloaded configuration", file=sys.stderr)
+
+        signal.signal(signal.SIGHUP, reload_config)
+
+        def is_whitelisted(host: str, port: int) -> bool:
+            with CONFIGURATION_LOCK:
+                return (host, port) in CONFIGURATION.whitelist
+
+        proxy = SynchronousWhitelistingProxy(conf.address, conf.port, is_whitelisted)
         proxy.start()
-        import time; time.sleep(5)
-        proxy.stop()
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt - shutting down")
+
+    else:
+        # ASYNC
+        async def reload_config(proxy: WhitelistingProxy):
+            with trio.open_signal_receiver(signal.SIGHUP) as received_signals:
+                async for signal_num in received_signals:
+                    try:
+                        x = load_config()
+                    except RuntimeError as e:
+                        print(e, file=sys.stderr)
+                    else:
+                        proxy.update(x.whitelist)
+                        print("Reloaded configuration", file=sys.stderr)
+
+        async def main():
+            proxy = WhitelistingProxy(CONFIGURATION.whitelist)
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(reload_config, proxy)
+                nursery.start_soon(proxy.listen, conf.address, conf.port)
+        try:
+            trio.run(main)
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt - shutting down")
