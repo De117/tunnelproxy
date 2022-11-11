@@ -275,7 +275,7 @@ class Domain(str):
         letter_digit = "[a-zA-Z0-9]"
         letter = "[a-zA-Z]"
         label = f"{letter}({letter_digit_hyphen}*{letter_digit}+)*"
-        domain = f"({label}\.)*{label}"
+        domain = f"({label}\\.)*{label}"
 
         if not re.match(f"^{domain}$", s):
             raise ValueError("Malformed domain: " + s)
