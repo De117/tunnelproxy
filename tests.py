@@ -4,7 +4,7 @@ from datetime import timedelta
 from hypothesis import given, settings, HealthCheck
 from hypothesis.strategies import data, integers, binary, floats
 
-from proxy import splice
+from whitelisting_proxy.proxy import splice
 
 
 @given(integers(1, 100), data())
@@ -34,7 +34,7 @@ async def test_splice(num_iterations: int, data):
         nursery.start_soon(testit, client, server)
 
 
-from proxy import WhitelistingProxy, run_synchronously_cancellable_proxy
+from whitelisting_proxy.proxy import WhitelistingProxy, run_synchronously_cancellable_proxy
 
 # Thread scheduling varies, so we cannot reliably (nor quickly) test
 # if SynchronousWhitelistingProxy cancellation works, i.e. that:

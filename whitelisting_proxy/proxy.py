@@ -1,5 +1,5 @@
 import trio, h11, threading, re, json
-from adapter import TrioHTTPConnection
+from .adapter import TrioHTTPConnection
 from functools import partial
 from dataclasses import dataclass
 from typing import Callable, Union, Iterable, Tuple, Set
