@@ -1,11 +1,12 @@
-import trio, h11, threading
+import trio, h11, threading, re, json
 from adapter import TrioHTTPConnection
 from functools import partial
+from dataclasses import dataclass
 from typing import Callable, Union, Iterable, Tuple, Set
 
-import signal, re, argparse, sys, json
-from dataclasses import dataclass
-
+################################################################
+#                  The proxy itself
+################################################################
 
 async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int], bool]) -> None:
     """
@@ -143,7 +144,8 @@ async def forward(source: trio.SocketStream, sink: trio.SocketStream, cancel_sco
 #                  User-friendly objects
 ################################################################
 
-WhitelistOrPredicate = Union[Iterable[Tuple[str, int]], Callable[[str, int], bool]]
+Whitelist = Iterable[Tuple[str, int]]
+Predicate = Callable[[str, int], bool]
 
 
 class WhitelistingProxy:
@@ -153,7 +155,7 @@ class WhitelistingProxy:
     Runs on a trio event loop.
     """
 
-    def __init__(self, whitelist: WhitelistOrPredicate):
+    def __init__(self, whitelist: Union[Whitelist, Predicate]):
         """
         `whitelist` is either a list of (host, port) pairs,
         or a predicate function taking a host and a port.
@@ -172,7 +174,7 @@ class WhitelistingProxy:
         h = partial(handle, is_whitelisted=self.is_whitelisted)
         await trio.serve_tcp(h, port, host=host)
 
-    def update(self, whitelist: WhitelistOrPredicate) -> None:
+    def update(self, whitelist: Union[Whitelist, Predicate]) -> None:
         """
         Update the whitelist.
 
@@ -286,7 +288,7 @@ class Configuration:
 
 def parse_host_and_port(s: str) -> Tuple[Domain, Port]:
     """
-    Parses a "host[:port]"i string into a (host, port) pair.
+    Parses a "host[:port]" string into a (host, port) pair.
     Default port is 80.
 
     Raises ValueError if parsing fails.
@@ -324,64 +326,3 @@ def load_configuration_from_file(filename: str) -> Configuration:
             return parse_configuration_v1(f.read())
     except (FileNotFoundError, ValueError) as e:
         raise RuntimeError(f"Could not open or parse configuration file: {e}") from e
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--configuration-file", required=True,
-        help="Path to configuration file."
-        'Format: {"version": 1, "allowed_hosts": ["foo.com:443", ...]}'
-    )
-    parser.add_argument("--address", default="localhost", help="IP address to listen on")
-    parser.add_argument("--port", default=8080, type=int, choices=range(65536), help="TCP port to listen on")
-    conf = parser.parse_args()
-    load_config = partial(load_configuration_from_file, conf.configuration_file)
-
-    CONFIGURATION = load_config()
-
-    # SYNC
-    if False:
-        CONFIGURATION_LOCK = threading.Lock()
-
-        def reload_config(*_):
-            try:
-                x = load_config()
-            except RuntimeError as e:
-                print(e, file=sys.stderr)
-            else:
-                global CONFIGURATION, CONFIGURATION_LOCK
-                with CONFIGURATION_LOCK:
-                    CONFIGURATION = x
-                print("Reloaded configuration", file=sys.stderr)
-
-        signal.signal(signal.SIGHUP, reload_config)
-
-        def is_whitelisted(host: str, port: int) -> bool:
-            with CONFIGURATION_LOCK:
-                return (host, port) in CONFIGURATION.whitelist
-
-        proxy = SynchronousWhitelistingProxy(conf.address, conf.port, is_whitelisted)
-        proxy.start()
-
-    else:
-        # ASYNC
-        async def reload_config(proxy: WhitelistingProxy):
-            with trio.open_signal_receiver(signal.SIGHUP) as received_signals:
-                async for signal_num in received_signals:
-                    try:
-                        x = load_config()
-                    except RuntimeError as e:
-                        print(e, file=sys.stderr)
-                    else:
-                        proxy.update(x.whitelist)
-                        print("Reloaded configuration", file=sys.stderr)
-
-        async def main():
-            proxy = WhitelistingProxy(CONFIGURATION.whitelist)
-            async with trio.open_nursery() as nursery:
-                nursery.start_soon(reload_config, proxy)
-                nursery.start_soon(proxy.listen, conf.address, conf.port)
-        try:
-            trio.run(main)
-        except KeyboardInterrupt:
-            print("KeyboardInterrupt - shutting down")
