@@ -54,6 +54,7 @@ async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int],
             host, port = parse_host_and_port(target_host)
         except ValueError:
             await w.send_error(400, f"Malformed hostname: {target_host!r}")
+            return
 
         client_request_completed = True
 
