@@ -1,4 +1,4 @@
-import trio, random, threading
+import trio, random, threading, socket
 import trio.testing, pytest
 from datetime import timedelta
 from functools import partial
@@ -144,11 +144,21 @@ def test_ports(d: Port) -> None:
 
 ################################################################
 
-@given(sets(tuples(domains(), ports()), min_size=1))
-async def test_full_connect(whitelist: Set[Tuple[Domain, Port]]) -> None:
+class ResolveAllToLocalhost(trio.abc.HostnameResolver):
+    """A fake resolver, which resolves all hostnames to 127.0.0.1."""
 
-    host, port = next(iter(whitelist))
-    is_whitelisted = lambda host, port: (host, port) in set(whitelist)
+    @staticmethod
+    async def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        # Synchronous, but should always return promptly.
+        return socket.getaddrinfo("localhost", port, family, type, proto, flags)
+
+    @staticmethod
+    async def getnameinfo(self, sockaddr, flags):
+        return await trio.socket.getnameinfo(sockaddr, flags)
+
+
+@given(sets(domains(), min_size=1))
+async def test_full_connect(domains: Set[Domain]) -> None:
 
     # TODO: instead of using bytes directly, use an h11 client?
     async def connect_OK(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes) -> None:
@@ -160,22 +170,29 @@ async def test_full_connect(whitelist: Set[Tuple[Domain, Port]]) -> None:
 
     expected = b"HTTP/1.1 200 Connection established\r\n"
 
-    # Instead of providing an external server, we stub trio.open_tcp_stream.
+    async def accept_and_close_connection(s: trio.socket.SocketType) -> None:
+        await s.accept()
+        s.close()
 
-    # TODO: do this better.
-    # Currently it is too tied to the implementation of `handle`,
-    # and is far from obviously correct.
-    client_stream, near_proxy_stream = trio.testing.memory_stream_pair()
-    far_proxy_stream, server_stream = trio.testing.memory_stream_pair()
-    try:
-        original_trio_open_tcp_stream = trio.open_tcp_stream
+    # We open a socket at an OS-chosen port, and override domain resolution.
+    with trio.socket.socket() as sock:
+        await sock.bind(("localhost", 0))
+        sock.listen()  # type: ignore
+        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
 
-        async def fake_open_tcp_stream(*args, **kwargs):
-            return far_proxy_stream
-        trio.open_tcp_stream = fake_open_tcp_stream
+        _, port = sock.getsockname()
+        host: Domain = random.choice(list(domains))
 
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(connect_OK, client_stream, host, port, expected)
-            nursery.start_soon(handle, near_proxy_stream, is_whitelisted)
-    finally:
-        trio.open_tcp_stream = original_trio_open_tcp_stream
+        original_resolver = trio.socket.set_custom_hostname_resolver(ResolveAllToLocalhost())
+        try:
+            whitelist = {(d, port) for d in domains}
+            is_whitelisted = lambda host, port: (host, port) in whitelist
+
+            client_stream, proxy_stream = trio.testing.memory_stream_pair()
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(connect_OK, client_stream, host, port, expected)
+                nursery.start_soon(handle, proxy_stream, is_whitelisted)
+                nursery.start_soon(accept_and_close_connection, sock)
+
+        finally:
+            trio.socket.set_custom_hostname_resolver(original_resolver)
