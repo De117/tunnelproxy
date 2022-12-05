@@ -82,7 +82,9 @@ async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int],
     except Exception as e:
         w.info(f"Handling exception: {e!r}")
         try:
-            if isinstance(e, h11.RemoteProtocolError):
+            if isinstance(e, trio.BrokenResourceError):
+                w.info("Client abruptly closed connection; dropping request.")
+            elif isinstance(e, h11.RemoteProtocolError):
                 await w.send_error(e.error_status_hint, str(e))
             elif isinstance(e, trio.TooSlowError):
                 if not client_request_completed:
