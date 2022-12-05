@@ -92,11 +92,11 @@ async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int],
             else:
                 w.info(f"Internal Server Error: {type(e)} {e}")
                 await w.send_error(500, str(e))
-            await w.shutdown_and_clean_up()
+            await w.ensure_shutdown()
         except Exception as e:
             import traceback
             w.info("Error while responding with 500 Internal Server Error: " + "\n".join(traceback.format_tb(e.__traceback__)))
-            await w.shutdown_and_clean_up()
+            await w.ensure_shutdown()
     finally:
         end_time = trio.current_time()
         w.info(f"Total time: {end_time - start_time:.6f}s")

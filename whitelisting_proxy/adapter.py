@@ -31,7 +31,7 @@ class TrioHTTPConnection:
     async def send(self, event: h11.Event) -> None:
         if type(event) is h11.ConnectionClosed:
             assert self.conn.send(event) is None
-            await self.shutdown_and_clean_up()
+            await self.ensure_shutdown()
         else:
             data: Optional[bytes] = self.conn.send(event)
             assert data is not None
@@ -62,33 +62,38 @@ class TrioHTTPConnection:
                 continue
             return event
 
-    async def shutdown_and_clean_up(self) -> None:
-        try:
-            await self.stream.send_eof()
-        except trio.BrokenResourceError:
-            # They're already gone, nothing to do
-            return
+    async def ensure_shutdown(self) -> None:
+        """
+        Terminates the connection. Idempotent.
+        """
+        # On the happy path, the client sends data only when he's supposed to,
+        # and the server has already done any closure on the application layer.
+        # So, we can close the TCP connection, and the client (seeing the FIN
+        # and the application-layer close) shall close his side, and all is OK.
 
-        # Wait and read for a bit to give them a chance to see that we closed
-        # things, but eventually give up and just close the socket.
-        # XX FIXME: possibly we should set SO_LINGER to 0 here, so
-        # that in the case where the client has ignored our shutdown and
-        # declined to initiate the close themselves, we do a violent shutdown
-        # (RST) and avoid the TIME_WAIT?
-        # it looks like nginx never does this for keepalive timeouts, and only
-        # does it for regular timeouts (slow clients I guess?) if explicitly
-        # enabled ("Default: reset_timedout_connection off")
-        with trio.move_on_after(self.shutdown_timeout):
-            try:
-                while True:
-                    # Attempt to read until EOF
-                    got = await self.stream.receive_some(MAX_RECV)
-                    if not got:
-                        break
-            except trio.BrokenResourceError:
-                pass
-            finally:
+        # Unhappy paths:
+        #
+        #   1. Client keeps sending data, and ignores (or does not notice) our FIN.
+        #      => He'll get a RST. We don't care.
+        #
+        #   2. Server has not closed the connection on the application layer,
+        #      because it was impossible (network error, client error).
+        #      => It is *not* the server's fault.
+        #
+        #   3. Server has not closed the connection on the application layer,
+        #      but *should* have closed it.
+        #      => It *is* the server's fault, but this class does not care.
+        #         HTTP semantics is caller's business.
+
+        # Also: a TIME_WAIT period (as consequence of an active close) is OK.
+
+        try:
+            # For non-socket `HalfCloseableStream`s, aclose() may block,
+            # but always closes the underlying resource before returning.
+            with trio.move_on_after(self.shutdown_timeout): # Hence the timeout.
                 await self.stream.aclose()
+        except trio.ClosedResourceError:
+            pass  # ensures idempotency
 
     def basic_headers(self) -> List[Tuple[bytes, bytes]]:  # h11._headers.Headers
         # HTTP requires these headers in all responses
@@ -108,7 +113,7 @@ class TrioHTTPConnection:
 
         if self.conn.our_state not in (h11.IDLE, h11.SEND_RESPONSE):
             # Cannot send an error; we can only terminate the connection.
-            await self.shutdown_and_clean_up()
+            await self.ensure_shutdown()
             return
 
         json_msg = json.dumps({"error": msg})
