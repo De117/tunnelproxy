@@ -169,6 +169,29 @@ async def test_full_connect(domains: Set[Domain], autojump_clock) -> None:
             resp = await stream.receive_some(10000)
             assert resp.startswith(expected)
 
+    async def connect_slowly(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes) -> None:
+        async with stream:
+            await trio.sleep(10)
+            try:
+                # This will blow up if the server already closed the connection.
+                await stream.send_all(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: whatever\r\n\r\n".encode())
+            except trio.BrokenResourceError:
+                pass
+            resp = await stream.receive_some(10000)
+            assert resp.startswith(expected)
+
+    async def connect_with_PUT(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes) -> None:
+        async with stream:
+            await stream.send_all(f"PUT {host}:{port} HTTP/1.1\r\nHost: whatever\r\n\r\n".encode())
+            resp = await stream.receive_some(10000)
+            assert resp.startswith(expected)
+
+    async def connect_with_bytes(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes, to_send: bytes) -> None:
+        async with stream:
+            await stream.send_all(to_send)
+            resp = await stream.receive_some(10000)
+            assert resp.startswith(expected)
+
     async def accept_and_close_connection(s: trio.socket.SocketType) -> None:
         await s.accept()
         s.close()
@@ -207,7 +230,6 @@ async def test_full_connect(domains: Set[Domain], autojump_clock) -> None:
 
             _, port = sock.getsockname()
             host: Domain = random.choice(list(domains))
-            print(host, port)
 
             whitelist = {(d, port) for d in domains}
             is_whitelisted = lambda host, port: (host, port) in whitelist
@@ -218,7 +240,93 @@ async def test_full_connect(domains: Set[Domain], autojump_clock) -> None:
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(connect_OK, client_stream, "non-whitelisted.domain", port, expected)
                 nursery.start_soon(handle, proxy_stream, is_whitelisted)
-                #nursery.start_soon(accept_and_close_connection, sock)
 
+
+        # Connect to a whitelisted, but non-existent upstream:
+        #   you should get back a 502 error (if upstream is down)
+        with trio.socket.socket() as sock:
+            await sock.bind(("localhost", 0))  # bound, but not listening
+
+            _, port = sock.getsockname()
+            host: Domain = random.choice(list(domains))
+
+            whitelist = {(d, port) for d in domains}
+            is_whitelisted = lambda host, port: (host, port) in whitelist
+
+            # whitelisted hostname
+            expected = b"HTTP/1.1 502"
+            client_stream, proxy_stream = trio.testing.memory_stream_pair()
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(connect_OK, client_stream, host, port, expected)
+                nursery.start_soon(handle, proxy_stream, is_whitelisted)
+
+
+        # Connect to a whitelisted, but non-existent upstream:
+        #   you should get back a 504 error (if upstream is up but times out)
+        #
+        # TODO: we'll need raw IP sockets for this.
+
+
+        # Anything else should fail with a 4xx error
+        #   client timeouts: 408 (Too Slow)
+        with trio.socket.socket() as sock:
+            await sock.bind(("localhost", 0))
+            sock.listen()  # type: ignore
+            # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+
+            _, port = sock.getsockname()
+            host: Domain = random.choice(list(domains))
+
+            whitelist = {(d, port) for d in domains}
+            is_whitelisted = lambda host, port: (host, port) in whitelist
+
+            # whitelisted hostname
+            expected = b"HTTP/1.1 408"
+            client_stream, proxy_stream = trio.testing.memory_stream_pair()
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(connect_slowly, client_stream, host, port, expected)
+                nursery.start_soon(handle, proxy_stream, is_whitelisted)
+
+
+        #   bad method: 405 (Not Allowed)
+        with trio.socket.socket() as sock:
+            await sock.bind(("localhost", 0))
+            sock.listen()  # type: ignore
+            # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+
+            _, port = sock.getsockname()
+            host: Domain = random.choice(list(domains))
+
+            whitelist = {(d, port) for d in domains}
+            is_whitelisted = lambda host, port: (host, port) in whitelist
+
+            # whitelisted hostname
+            expected = b"HTTP/1.1 405"
+            client_stream, proxy_stream = trio.testing.memory_stream_pair()
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(connect_with_PUT, client_stream, host, port, expected)
+                nursery.start_soon(handle, proxy_stream, is_whitelisted)
+
+        #   malformed request is 400 (Bad Request)
+        random_length = random.randint(0, 100)
+        random_bytes = bytes(random.getrandbits(8) for _ in range(random_length))
+        random_bytes += b"\r\n\r\n"  # we must terminate the line, or the server will time out
+
+        with trio.socket.socket() as sock:
+            await sock.bind(("localhost", 0))
+            sock.listen()  # type: ignore
+            # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+
+            _, port = sock.getsockname()
+            host: Domain = random.choice(list(domains))
+
+            whitelist = {(d, port) for d in domains}
+            is_whitelisted = lambda host, port: (host, port) in whitelist
+
+            expected = b"HTTP/1.1 400"
+            client_stream, proxy_stream = trio.testing.memory_stream_pair()
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(connect_with_bytes, client_stream, host, port, expected, random_bytes)
+                nursery.start_soon(handle, proxy_stream, is_whitelisted)
     finally:
         trio.socket.set_custom_hostname_resolver(original_resolver)
