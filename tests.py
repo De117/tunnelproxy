@@ -159,7 +159,7 @@ class ResolveAllToLocalhost(trio.abc.HostnameResolver):
 
 @given(domains=sets(domains(), min_size=1))
 @settings(deadline=timedelta(seconds=1000), suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_full_connect(domains: Set[Domain], autojump_clock) -> None:
+async def test_handle(domains: Set[Domain], autojump_clock) -> None:
 
     # TODO: instead of using bytes directly, use an h11 client?
     async def connect_OK(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes) -> None:
@@ -264,7 +264,41 @@ async def test_full_connect(domains: Set[Domain], autojump_clock) -> None:
         # Connect to a whitelisted, but non-existent upstream:
         #   you should get back a 504 error (if upstream is up but times out)
         #
-        # TODO: we'll need raw IP sockets for this.
+        # XXX: we cannot use raw IP sockets as a normal user. But at least on
+        #      UNIX-like systems, we can ensure a slow TCP handshake.
+
+        with trio.socket.socket() as sock:
+            await sock.bind(("localhost", 0))
+            sock.listen(0)  # type: ignore
+            # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+
+            _, port = sock.getsockname()
+            host: Domain = random.choice(list(domains))
+
+            # Setting the backlog to 0 does not actually set the number of
+            # pending TCP connections to 0, but it comes close.
+            #
+            # So if other TCP connections come first, our handshake will be
+            # merely delayed, and will not get a RST in return, as it would
+            # if there was no process listening.
+            stuffing_sockets = []
+            while True:
+                s = trio.socket.socket()
+                with trio.move_on_after(0.010) as cancel_scope:
+                    await s.connect(("localhost", port))
+                if cancel_scope.cancelled_caught:
+                    break  # that's enough, it can't fit any more
+                stuffing_sockets.append(s)
+
+            whitelist = {(d, port) for d in domains}
+            is_whitelisted = lambda host, port: (host, port) in whitelist
+
+            # whitelisted hostname
+            expected = b"HTTP/1.1 504"
+            client_stream, proxy_stream = trio.testing.memory_stream_pair()
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(connect_OK, client_stream, host, port, expected)
+                nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
         # Anything else should fail with a 4xx error
