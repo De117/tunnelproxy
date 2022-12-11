@@ -176,8 +176,9 @@ def resolve_all_to_localhost(f: Callable) -> Callable:
     return wrapper
 
 ################################################################
+#                  "HTTP client/server" functions
+################################################################
 
-# TODO: instead of using bytes directly, use an h11 client?
 async def connect(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes, method: str = "CONNECT") -> None:
     """Connect, assert it's OK, quit."""
     hostname = f"{host}:{port}"
@@ -187,6 +188,7 @@ async def connect(stream: trio.abc.Stream, host: Domain, port: Port, expected: b
         assert resp.startswith(expected)
 
 async def connect_slowly(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes) -> None:
+    """Like `connect`, does it very slowly."""
     async with stream:
         await trio.sleep(10)
         try:
@@ -198,6 +200,7 @@ async def connect_slowly(stream: trio.abc.Stream, host: Domain, port: Port, expe
         assert resp.startswith(expected)
 
 async def connect_with_bytes(stream: trio.abc.Stream, host: Domain, port: Port, expected: bytes, to_send: bytes) -> None:
+    """Like `connect`, but sends the given bytes instead of an actual HTTP request."""
     async with stream:
         await stream.send_all(to_send)
         resp = await stream.receive_some(10000)
@@ -215,7 +218,7 @@ async def accept_and_close_connection(s: trio.socket.SocketType) -> None:
 @resolve_all_to_localhost
 async def test_connect_to_whitelisted_host(domains: Set[Domain]) -> None:
 
-    expected = b"HTTP/1.1 200 Connection established\r\n"
+    expected = b"HTTP/1.1 200"
 
     # Connect to a whitelisted hostname:
     #   you should have access (200 OK)
@@ -237,56 +240,46 @@ async def test_connect_to_whitelisted_host(domains: Set[Domain]) -> None:
             nursery.start_soon(accept_and_close_connection, sock)
 
 
-@given(domains=sets(domains(), min_size=1))
+@given(domains=sets(domains(), min_size=1), port=ports())
 @resolve_all_to_localhost
-async def test_connect_to_non_whitelisted_host(domains: Set[Domain]) -> None:
+async def test_connect_to_non_whitelisted_host(domains: Set[Domain], port: Port) -> None:
+
     expected = b"HTTP/1.1 403"
 
     # Connect to a non-whitelisted hostname:
     #   you should get back a 403 error
-    with trio.socket.socket() as sock:
-        await sock.bind(("localhost", 0))
-        sock.listen()  # type: ignore
-        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+    whitelist = {(d, port) for d in domains}
+    is_whitelisted = lambda host, port: (host, port) in whitelist
 
-        _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
-
-        whitelist = {(d, port) for d in domains}
-        is_whitelisted = lambda host, port: (host, port) in whitelist
-
-        client_stream, proxy_stream = trio.testing.memory_stream_pair()
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(connect, client_stream, "non-whitelisted.domain", port, expected)
-            nursery.start_soon(handle, proxy_stream, is_whitelisted)
+    client_stream, proxy_stream = trio.testing.memory_stream_pair()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(connect, client_stream, "non-whitelisted.domain", port, expected)
+        nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1))
+@given(domains=sets(domains(), min_size=1), port=ports())
 @resolve_all_to_localhost
-async def test_connect_to_whitelisted_nonexistent_upstream_host(domains: Set[Domain]) -> None:
+async def test_connect_to_whitelisted_nonexistent_upstream_host(domains: Set[Domain], port: Port) -> None:
+
     expected = b"HTTP/1.1 502"
 
     # Connect to a whitelisted, but non-existent upstream:
     #   you should get back a 502 error (if upstream is down)
-    with trio.socket.socket() as sock:
-        await sock.bind(("localhost", 0))  # bound, but not listening
+    host: Domain = random.choice(list(domains))
+    whitelist = {(d, port) for d in domains}
+    is_whitelisted = lambda host, port: (host, port) in whitelist
 
-        _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
-
-        whitelist = {(d, port) for d in domains}
-        is_whitelisted = lambda host, port: (host, port) in whitelist
-
-        client_stream, proxy_stream = trio.testing.memory_stream_pair()
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(connect, client_stream, host, port, expected)
-            nursery.start_soon(handle, proxy_stream, is_whitelisted)
+    client_stream, proxy_stream = trio.testing.memory_stream_pair()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(connect, client_stream, host, port, expected)
+        nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
 @given(domains=sets(domains(), min_size=1))
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @resolve_all_to_localhost
 async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], autojump_clock) -> None:
+
     expected = b"HTTP/1.1 504"
 
     # Connect to a whitelisted, but non-existent upstream:
@@ -302,8 +295,8 @@ async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], a
         _, port = sock.getsockname()
         host: Domain = random.choice(list(domains))
 
-        # Setting the backlog to 0 does not actually set the number of
-        # pending TCP connections to 0, but it comes close.
+        # Setting the listen backlog to 0 does not actually set the
+        # number of pending TCP connections to 0, but it comes close.
         #
         # So if other TCP connections come first, our handshake will be
         # merely delayed, and will not get a RST in return, as it would
@@ -326,79 +319,61 @@ async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], a
             nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1))
+@given(domains=sets(domains(), min_size=1), port=ports())
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @resolve_all_to_localhost
-async def test_connect_where_client_times_out(domains: Set[Domain], autojump_clock) -> None:
+async def test_connect_where_client_times_out(domains: Set[Domain], port: Port, autojump_clock) -> None:
+
     expected = b"HTTP/1.1 408"
 
     # Anything else should fail with a 4xx error
     #   client timeouts: 408 (Too Slow)
-    with trio.socket.socket() as sock:
-        await sock.bind(("localhost", 0))
-        sock.listen()  # type: ignore
-        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+    host: Domain = random.choice(list(domains))
+    whitelist = {(d, port) for d in domains}
+    is_whitelisted = lambda host, port: (host, port) in whitelist
 
-        _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
-
-        whitelist = {(d, port) for d in domains}
-        is_whitelisted = lambda host, port: (host, port) in whitelist
-
-        client_stream, proxy_stream = trio.testing.memory_stream_pair()
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(connect_slowly, client_stream, host, port, expected)
-            nursery.start_soon(handle, proxy_stream, is_whitelisted)
+    client_stream, proxy_stream = trio.testing.memory_stream_pair()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(connect_slowly, client_stream, host, port, expected)
+        nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
 HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"]
 
-@given(domains=sets(domains(), min_size=1), method=sampled_from(HTTP_METHODS + ["DJWAODUIJAW"]))
+@given(domains=sets(domains(), min_size=1), port=ports(), method=sampled_from(HTTP_METHODS + ["DJWAODUIJAW"]))
 @resolve_all_to_localhost
-async def test_connect_with_bad_method(domains: Set[Domain], method: str) -> None:
+async def test_connect_with_bad_method(domains: Set[Domain], port: Port, method: str) -> None:
+
     assume(method != "CONNECT")
     expected = b"HTTP/1.1 405"
 
     #   bad method: 405 (Not Allowed)
-    with trio.socket.socket() as sock:
-        await sock.bind(("localhost", 0))
-        sock.listen()  # type: ignore
-        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+    host: Domain = random.choice(list(domains))
+    whitelist = {(d, port) for d in domains}
+    is_whitelisted = lambda host, port: (host, port) in whitelist
 
-        _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
-
-        whitelist = {(d, port) for d in domains}
-        is_whitelisted = lambda host, port: (host, port) in whitelist
-
-        client_stream, proxy_stream = trio.testing.memory_stream_pair()
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(connect, client_stream, host, port, expected, method)
-            nursery.start_soon(handle, proxy_stream, is_whitelisted)
+    client_stream, proxy_stream = trio.testing.memory_stream_pair()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(connect, client_stream, host, port, expected, method)
+        nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1))
+@given(domains=sets(domains(), min_size=1), port=ports())
 @resolve_all_to_localhost
-async def test_connect_with_random_input(domains: Set[Domain]) -> None:
+async def test_connect_with_random_input(domains: Set[Domain], port: Port) -> None:
+
     expected = b"HTTP/1.1 400"
 
-    #   malformed request is 400 (Bad Request)
+    #   malformed request: 400 (Bad Request)
     random_length = random.randint(0, 100)
     random_bytes = bytes(random.getrandbits(8) for _ in range(random_length))
     random_bytes += b"\r\n\r\n"  # we must terminate the line, or the server will time out
 
-    with trio.socket.socket() as sock:
-        await sock.bind(("localhost", 0))
-        sock.listen()  # type: ignore
-        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+    host: Domain = random.choice(list(domains))
+    whitelist = {(d, port) for d in domains}
+    is_whitelisted = lambda host, port: (host, port) in whitelist
 
-        _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
-
-        whitelist = {(d, port) for d in domains}
-        is_whitelisted = lambda host, port: (host, port) in whitelist
-
-        client_stream, proxy_stream = trio.testing.memory_stream_pair()
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(connect_with_bytes, client_stream, host, port, expected, random_bytes)
-            nursery.start_soon(handle, proxy_stream, is_whitelisted)
+    client_stream, proxy_stream = trio.testing.memory_stream_pair()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(connect_with_bytes, client_stream, host, port, expected, random_bytes)
+        nursery.start_soon(handle, proxy_stream, is_whitelisted)
