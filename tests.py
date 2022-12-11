@@ -375,5 +375,6 @@ async def test_connect_with_random_input(domains: Set[Domain], port: Port) -> No
 
     client_stream, proxy_stream = trio.testing.memory_stream_pair()
     async with trio.open_nursery() as nursery:
-        nursery.start_soon(connect_with_bytes, client_stream, host, port, expected, random_bytes)
+        # As of trio-typing 0.7.0, start_soon's type signature only supports up to 5 arguments.
+        nursery.start_soon(connect_with_bytes, client_stream, host, port, expected, random_bytes)  # type: ignore
         nursery.start_soon(handle, proxy_stream, is_whitelisted)
