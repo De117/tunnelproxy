@@ -7,7 +7,7 @@ from hypothesis.strategies import data, integers, binary, floats, lists, builds,
 
 from typing import Set, Tuple, List, Callable
 
-from whitelisting_proxy.proxy import splice
+from whitelisting_proxy._proxy import splice
 
 
 @given(integers(1, 100), data())
@@ -37,7 +37,7 @@ async def test_splice(num_iterations: int, data):
         nursery.start_soon(testit, client, server)
 
 
-from whitelisting_proxy.proxy import WhitelistingProxy, run_synchronously_cancellable_proxy
+from whitelisting_proxy._proxy import WhitelistingProxy, run_synchronously_cancellable_proxy
 
 # Thread scheduling varies, so we cannot reliably (nor quickly) test
 # if SynchronousWhitelistingProxy cancellation works, i.e. that:
@@ -75,8 +75,8 @@ async def test_cancellation_seen_promptly(stop_check_interval: float, autojump_c
         nursery.start_soon(runner)
         nursery.start_soon(killer)
 
-from whitelisting_proxy.proxy import handle
-from whitelisting_proxy.config import Domain, Port
+from whitelisting_proxy._proxy import handle
+from whitelisting_proxy._config import Domain, Port
 
 # Tests for the main handler follow.
 #
