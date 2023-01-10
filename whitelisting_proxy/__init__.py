@@ -1,6 +1,8 @@
 from .proxy import (
     WhitelistingProxy,
     SynchronousWhitelistingProxy,
+)
+from .config import (
     Port,
     Domain,
     Configuration,

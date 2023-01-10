@@ -75,7 +75,8 @@ async def test_cancellation_seen_promptly(stop_check_interval: float, autojump_c
         nursery.start_soon(runner)
         nursery.start_soon(killer)
 
-from whitelisting_proxy.proxy import Domain, Port, handle
+from whitelisting_proxy.proxy import handle
+from whitelisting_proxy.config import Domain, Port
 
 # Tests for the main handler follow.
 #
