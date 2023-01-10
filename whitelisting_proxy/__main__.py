@@ -1,8 +1,8 @@
 import trio, threading, signal, argparse, sys
 from functools import partial
 from typing import Union, Tuple, Set
-from .proxy import WhitelistingProxy, SynchronousWhitelistingProxy
-from .config import load_configuration_from_file
+from ._proxy import WhitelistingProxy, SynchronousWhitelistingProxy
+from ._config import load_configuration_from_file
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

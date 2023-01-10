@@ -7,6 +7,9 @@ from typing import Union, Set, Tuple
 ################################################################
 
 class Port(int):
+    """
+    An integer in the range [0, 2**16).
+    """
     def __init__(self, n: Union[int, str]):
         try:
             if isinstance(n, str):
@@ -18,6 +21,9 @@ class Port(int):
             raise ValueError(f"Invalid port number: {n}")
 
 class Domain(str):
+    """
+    A non-empty domain name, according to RFC 1035.
+    """
     def __init__(self, s: str):
         # Grammar taken from RFC 1035, §2.3.1
         # (The "subdomain" node, because we do not allow the empty string.)

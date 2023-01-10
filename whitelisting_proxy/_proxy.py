@@ -1,6 +1,6 @@
 import trio, h11, threading
-from .adapter import TrioHTTPConnection
-from .config import parse_host_and_port
+from ._adapter import TrioHTTPConnection
+from ._config import parse_host_and_port
 from functools import partial
 from typing import Callable, Union, Iterable, Tuple
 

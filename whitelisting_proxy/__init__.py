@@ -1,8 +1,12 @@
-from .proxy import (
+"""
+A small, whitelisting HTTP CONNECT proxy.
+"""
+
+from ._proxy import (
     WhitelistingProxy,
     SynchronousWhitelistingProxy,
 )
-from .config import (
+from ._config import (
     Port,
     Domain,
     Configuration,
