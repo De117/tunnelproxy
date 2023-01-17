@@ -3,8 +3,8 @@ A small, whitelisting HTTP CONNECT proxy.
 """
 
 from ._proxy import (
-    WhitelistingProxy,
-    SynchronousWhitelistingProxy,
+    TunnelProxy,
+    SynchronousTunnelProxy,
 )
 from ._config import (
     Port,

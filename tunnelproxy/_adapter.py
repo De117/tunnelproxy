@@ -24,7 +24,7 @@ class TrioHTTPConnection:
         """
         self.stream = stream
         self.conn = h11.Connection(h11.SERVER)
-        self.server_header = f"whitelisting-proxy/1.0 ({h11.PRODUCT_ID})".encode()
+        self.server_header = f"tunnelproxy/1.0 ({h11.PRODUCT_ID})".encode()
         self._connection_id = hex(random.getrandbits(64))[2:].zfill(16)
         self.shutdown_timeout = shutdown_timeout
 

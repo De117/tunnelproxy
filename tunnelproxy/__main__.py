@@ -1,7 +1,7 @@
 import trio, threading, signal, argparse, sys
 from functools import partial
 from typing import Union, Tuple, Set
-from ._proxy import WhitelistingProxy, SynchronousWhitelistingProxy
+from ._proxy import TunnelProxy, SynchronousTunnelProxy
 from ._config import load_configuration_from_file
 
 if __name__ == "__main__":
@@ -35,16 +35,16 @@ if __name__ == "__main__":
 
         signal.signal(signal.SIGHUP, reload_config_sync)
 
-        def is_whitelisted(host: str, port: int) -> bool:
+        def is_allowed(host: str, port: int) -> bool:
             with CONFIGURATION_LOCK:
-                return (host, port) in CONFIGURATION.whitelist
+                return (host, port) in CONFIGURATION.allowed_hosts
 
-        proxy = SynchronousWhitelistingProxy(conf.address, conf.port, is_whitelisted)
+        proxy = SynchronousTunnelProxy(conf.address, conf.port, is_allowed)
         proxy.start()
 
     else:
         CONFIGURATION = load_config()
-        async def reload_config(proxy: WhitelistingProxy):
+        async def reload_config(proxy: TunnelProxy):
             with trio.open_signal_receiver(signal.SIGHUP) as received_signals:
                 async for signal_num in received_signals:
                     try:
@@ -52,11 +52,11 @@ if __name__ == "__main__":
                     except RuntimeError as e:
                         print(e, file=sys.stderr)
                     else:
-                        proxy.update(x.whitelist)
+                        proxy.update(x.allowed_hosts)
                         print("Reloaded configuration", file=sys.stderr)
 
         async def main():
-            proxy = WhitelistingProxy(CONFIGURATION.whitelist)
+            proxy = TunnelProxy(CONFIGURATION.allowed_hosts)
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(reload_config, proxy)
                 nursery.start_soon(proxy.listen, conf.address, conf.port)

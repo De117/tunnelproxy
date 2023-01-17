@@ -39,7 +39,7 @@ class Domain(str):
 @dataclass
 class Configuration:
     version: int
-    whitelist: Set[Tuple[Domain, Port]]
+    allowed_hosts: Set[Tuple[Domain, Port]]
 
 
 def parse_host_and_port(s: str) -> Tuple[Domain, Port]:
@@ -67,8 +67,8 @@ def parse_configuration_v1(b: bytes) -> Configuration:
         assert "allowed_hosts" in config, "Missing field: allowed_hosts"
         hostnames = config["allowed_hosts"]
         assert isinstance(hostnames, list), "Malformed field: hostname"
-        whitelist = {parse_host_and_port(h) for h in hostnames}
-        return Configuration(version=1, whitelist=whitelist)
+        allowed_hosts = {parse_host_and_port(h) for h in hostnames}
+        return Configuration(version=1, allowed_hosts=allowed_hosts)
     except (json.JSONDecodeError, AssertionError, ValueError) as e:
         raise ValueError("Could not parse v1 configuration") from e
 

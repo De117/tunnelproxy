@@ -7,7 +7,7 @@ from hypothesis.strategies import data, integers, binary, floats, lists, builds,
 
 from typing import Set, Tuple, List, Callable
 
-from whitelisting_proxy._proxy import splice
+from tunnelproxy._proxy import splice
 
 
 @given(integers(1, 100), data())
@@ -37,10 +37,10 @@ async def test_splice(num_iterations: int, data):
         nursery.start_soon(testit, client, server)
 
 
-from whitelisting_proxy._proxy import WhitelistingProxy, run_synchronously_cancellable_proxy
+from tunnelproxy._proxy import TunnelProxy, run_synchronously_cancellable_proxy
 
 # Thread scheduling varies, so we cannot reliably (nor quickly) test
-# if SynchronousWhitelistingProxy cancellation works, i.e. that:
+# if SynchronousTunnelProxy cancellation works, i.e. that:
 #
 #     1. the proxy _will_ be cancelled
 #     2. it will happen in no more than `stop_check_interval` seconds
@@ -55,7 +55,7 @@ async def test_cancellation_seen_promptly(stop_check_interval: float, autojump_c
     host = "localhost"
     port = 12349  # hopefully available
 
-    p = WhitelistingProxy(whitelist=(),)
+    p = TunnelProxy(allowed_hosts=(),)
     stop = threading.Event()
 
     proxy_cancelled = False
@@ -66,7 +66,7 @@ async def test_cancellation_seen_promptly(stop_check_interval: float, autojump_c
         proxy_cancelled = True
 
     async def killer() -> None:
-        await trio.to_thread.run_sync(stop.set)  # from another thread, as in SynchronousWhitelistingProxy
+        await trio.to_thread.run_sync(stop.set)  # from another thread, as in SynchronousTunnelProxy
         assert stop.is_set(), "This should always be the case, as it's a threading.Event"
         await trio.sleep(1.001 * stop_check_interval)
         assert proxy_cancelled, "After `stop_check_interval`, the proxy should have been cancelled"
@@ -75,8 +75,8 @@ async def test_cancellation_seen_promptly(stop_check_interval: float, autojump_c
         nursery.start_soon(runner)
         nursery.start_soon(killer)
 
-from whitelisting_proxy._proxy import handle
-from whitelisting_proxy._config import Domain, Port
+from tunnelproxy._proxy import handle
+from tunnelproxy._config import Domain, Port
 
 # Tests for the main handler follow.
 #

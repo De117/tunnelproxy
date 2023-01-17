@@ -10,16 +10,16 @@ A secondary goal is to be flexible. It can be used in two ways:
   1. As a stand-alone proxy.
      Just run the module:
      ```sh
-     python -m whitelisting_proxy --address localhost --port 8080 --config example-config.json
+     python -m tunnelproxy --address localhost --port 8080 --config example-config.json
      ```
 
   2. As a library.
-     The proxy (`WhitelistingProxy`) always runs in Trio's event loop, but a
-     wrapper (`SynchronousWhitelistingProxy`) lets you run it from normal code.
+     The proxy (`TunnelProxy`) always runs in Trio's event loop, but a
+     wrapper (`SynchronousTunnelProxy`) lets you run it from normal code.
 
      Make it your own!
 
-For example of (2), see `whitelisting_proxy/__main__.py`.
+For example of (2), see `tunnelproxy/__main__.py`.
 
 
 # Performance

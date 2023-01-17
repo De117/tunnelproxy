@@ -8,11 +8,11 @@ from typing import Callable, Union, Iterable, Tuple
 #                  The proxy itself
 ################################################################
 
-async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int], bool]) -> None:
+async def handle(stream: trio.SocketStream, is_allowed: Callable[[str, int], bool]) -> None:
     """
     Handles one HTTP CONNECT request from start to end, allowing only whitelisted connections.
 
-    `is_whitelisted` must take hostname (str) and port (int).
+    `is_allowed` must take hostname (str) and port (int).
     """
     start_time = trio.current_time()
     w = TrioHTTPConnection(stream, shutdown_timeout=10)
@@ -58,7 +58,7 @@ async def handle(stream: trio.SocketStream, is_whitelisted: Callable[[str, int],
 
         client_request_completed = True
 
-        if not is_whitelisted(host, port):
+        if not is_allowed(host, port):
             await w.send_error(403, f"Host/port combination not allowed: {host}:{port}")
             return
 
@@ -151,19 +151,19 @@ Whitelist = Iterable[Tuple[str, int]]
 Predicate = Callable[[str, int], bool]
 
 
-class WhitelistingProxy:
+class TunnelProxy:
     """
-    An HTTP forwards proxy which only allows connections from a whitelist.
+    An HTTP CONNECT proxy which only allows whitelisted connections.
 
     Runs on a trio event loop.
     """
 
-    def __init__(self, whitelist: Union[Whitelist, Predicate]):
+    def __init__(self, allowed_hosts: Union[Whitelist, Predicate]):
         """
-        `whitelist` is either a list of (host, port) pairs,
+        `allowed_hosts` is either a list of (host, port) pairs,
         or a predicate function taking a host and a port.
         """
-        self.update(whitelist)
+        self.update(allowed_hosts)
 
     async def listen(self, host: str, port: int) -> None:
         """
@@ -174,24 +174,24 @@ class WhitelistingProxy:
           port: the port to listen on
         """
         print(f"Listening on http://{host}:{port}")
-        h = partial(handle, is_whitelisted=self.is_whitelisted)
+        h = partial(handle, is_allowed=self.is_allowed)
         await trio.serve_tcp(h, port, host=host)
 
-    def update(self, whitelist: Union[Whitelist, Predicate]) -> None:
+    def update(self, allowed_hosts: Union[Whitelist, Predicate]) -> None:
         """
         Update the whitelist.
 
-        `whitelist` is either a list of (host, port) pairs,
+        `allowed_hosts` is either a list of (host, port) pairs,
         or a predicate function taking a host and a port.
         """
-        if not callable(whitelist):
-            self.is_whitelisted = lambda host, port: (host, port) in set(whitelist)
+        if callable(allowed_hosts):
+            self.is_allowed = allowed_hosts
         else:
-            self.is_whitelisted = whitelist
+            self.is_allowed = lambda host, port: (host, port) in set(allowed_hosts)
 
 
 async def run_synchronously_cancellable_proxy(
-        proxy: WhitelistingProxy,
+        proxy: TunnelProxy,
         host: str,
         port: int,
         stop: threading.Event,
@@ -216,9 +216,9 @@ async def run_synchronously_cancellable_proxy(
         nursery.start_soon(proxy.listen, host, port)
 
 
-class SynchronousWhitelistingProxy:
+class SynchronousTunnelProxy:
     """
-    A wrapper around WhitelistingProxy which runs it in a separate
+    A wrapper around TunnelProxy which runs it in a separate
     thread, so you can use it from a traditional threaded program.
 
     Can stop, but not gently. (It kills all TCP connections.)
@@ -227,19 +227,19 @@ class SynchronousWhitelistingProxy:
     def __init__(self,
             host: str,
             port: int,
-            whitelist: Union[Iterable[Tuple[str, int]], Callable[[str, int], bool]],
+            allowed_hosts: Union[Whitelist, Predicate],
             stop_check_interval: float = 0.010,
             ):
         """
-        Parameters are similar to WhitelistingProxy. `stop_check_interval` is new:
+        Parameters are similar to TunnelProxy. `stop_check_interval` is new:
         this is how long (in seconds) it may take to stop the proxy.
         """
-        self._proxy = WhitelistingProxy(whitelist)
+        self._proxy = TunnelProxy(allowed_hosts)
         self._started = False
         self._stop = threading.Event()
 
         self._thread = threading.Thread(
-            name=f"SynchronousWhitelistingProxy-on-http://{host}:{port}/",
+            name=f"SynchronousTunnelProxy-on-http://{host}:{port}/",
             target=trio.run,
             args=(run_synchronously_cancellable_proxy, self._proxy, host, port, self._stop, stop_check_interval),
         )
