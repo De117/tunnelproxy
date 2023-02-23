@@ -1,6 +1,7 @@
 """
 A small, whitelisting HTTP CONNECT proxy.
 """
+from ._version import __version__
 
 from ._proxy import (
     TunnelProxy,

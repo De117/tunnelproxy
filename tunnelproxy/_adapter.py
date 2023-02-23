@@ -1,6 +1,7 @@
 import trio, h11, json, random
 from wsgiref.handlers import format_date_time
 from typing import List, Tuple, Optional, Union, Type
+from . import __version__
 
 ################################################################
 # I/O adapter: h11 <-> trio
@@ -24,7 +25,7 @@ class TrioHTTPConnection:
         """
         self.stream = stream
         self.conn = h11.Connection(h11.SERVER)
-        self.server_header = f"tunnelproxy/1.0 ({h11.PRODUCT_ID})".encode()
+        self.server_header = f"tunnelproxy/{__version__} ({h11.PRODUCT_ID})".encode()
         self._connection_id = hex(random.getrandbits(64))[2:].zfill(16)
         self.shutdown_timeout = shutdown_timeout
 
