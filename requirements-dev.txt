@@ -3,4 +3,3 @@ h11==0.14.0
 hypothesis==6.49.1
 pytest==7.1.2
 pytest-trio==0.7.0
-wheel
