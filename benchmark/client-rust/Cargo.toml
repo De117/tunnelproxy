@@ -9,3 +9,4 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 reqwest = {version = "0.11.22"}
 futures = {version = "0.3"}
+argparse = {version = "0.2.2"}
