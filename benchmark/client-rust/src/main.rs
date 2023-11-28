@@ -1,9 +1,6 @@
-use tokio::net::TcpStream;
-use tokio::io::AsyncWriteExt;
-//use tokio::task::{JoinHandle, JoinError};
 use std::io::{Read, Write};
 use std::time::{Instant, Duration};
-use argparse::{ArgumentParser, Store};
+use argparse::{ArgumentParser, Store, StoreOption};
 use std::fmt::{Display, Formatter};
 
 #[derive(Clone)]
@@ -31,9 +28,9 @@ const BUFFER_SIZE: usize = 1000;
 struct Sample {
     /// Time to establish TCP connection
     t_connect: Duration,
-    /// Time to send our message
-    t_send: Duration,
-    /// Total time (until we've read the result)
+    /// Time to get a response from the proxy (if used)
+    t_proxy: Duration,
+    /// Time until we've read the result from the target server
     t_total: Duration,
     /// Was the sample successful (as opposed to an error)?
     ok: bool,
@@ -68,158 +65,47 @@ fn spin_until(t: Instant) -> Duration {
     }
 }
 
-fn make_request(request_id: &str, proxy: &Host, target: &Host) -> Sample {
-    let proxy_request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, proxy).into_bytes();
+fn make_request(request_id: &str, proxy: Option<&Host>, target: &Host) -> Sample {
+    let proxy_request = proxy.map(|p| format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, p).into_bytes());
     let http_request = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", target).into_bytes();
 
     let mut buffer = [0u8; BUFFER_SIZE];
 
-    let log = |_s: &str| -> () {println!("Request {}: {}", request_id, _s)};
+    //let log = |_s: &str| -> () {println!("Request {}: {}", request_id, _s)};
 
     let t0 = Instant::now();
 
     let mut t_connect = None;
-    let mut t_send = None;
-    let mut t_read = None;
-    let ok: bool;
+    let mut t_proxy = None;
+    let mut t_total = None;
 
-    match std::net::TcpStream::connect((&proxy.hostname as &str, proxy.port)) {
-        Err(_) => {ok = false; log("Could not connect")}
-        Ok(mut stream) => {
-            t_connect = Some(Instant::now());
-            match stream.write_all(proxy_request.as_slice()) {
-                Err(_) => {ok = false; log("Could not write")}
-                Ok(_) => {
-                    t_send = Some(Instant::now());
-                    match stream.read(&mut buffer) {
-                        Err(_) => {ok = false; log("Could not read")}
-                        Ok(_n) => {
-                            t_read = Some(Instant::now());
-                            //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[.._n])).as_str());
-                            match stream.write_all(http_request.as_slice()) {
-                                Err(_) => {ok = false; log("Could not write 2")}
-                                Ok(_) => {
-                                    match stream.read(&mut buffer) {
-                                        Err(_) => {ok = false; log("Could not read 2")}
-                                        Ok(_n) => {
-                                            //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[.._n])).as_str());
-                                            ok = true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let ok: bool = (|| {
+        let server = proxy.unwrap_or(target);
+
+        let mut stream = std::net::TcpStream::connect((&server.hostname as &str, server.port))?;
+        t_connect = Some(Instant::now());
+
+        if proxy.is_some() {
+            stream.write_all(proxy_request.unwrap().as_slice())?;
+            let _n = stream.read(&mut buffer)?;
+            t_proxy = Some(Instant::now());
+            //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[.._n])).as_str());
         }
-    }
+        stream.write_all(http_request.as_slice())?;
+        let _n = stream.read(&mut buffer)?;
+        t_total = Some(Instant::now());
+        //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[.._n])).as_str());
+
+        Ok(true) as Result<bool, std::io::Error>
+    })().unwrap_or(false);
+
     let s = Sample {
         t_connect: t_connect.unwrap_or(t0) - t0,
-        t_send:    t_send.unwrap_or(t0) - t_connect.unwrap_or(t0),
-        t_total:   t_read.unwrap_or(t0) - t0,
+        t_proxy:   t_proxy.unwrap_or(t0) - t_connect.unwrap_or(t0),
+        t_total:   t_total.unwrap_or(t0) - t0,
         ok,
     };
     return s
-}
-
-async fn _test_one_tokio(request_id: &str, ip_address: &str, tcp_port: u16) -> Sample {
-    let http_request = b"GET / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
-
-    let mut buffer = [0u8; BUFFER_SIZE];
-
-    let log = |_s: &str| -> () {println!("Request {}: {}", request_id, _s)};
-
-    let t0 = Instant::now();
-
-    let mut t_connect = None;
-    let mut t_send = None;
-    let mut t_read = None;
-    let ok: bool;
-
-    match tokio::net::TcpStream::connect((ip_address, tcp_port)).await {
-        Err(_) => {ok = false; log("Could not connect")}
-        Ok(mut stream) => {
-            t_connect = Some(Instant::now());
-            match stream.write_all(http_request).await {
-                Err(_) => {ok = false; log("Could not write")}
-                Ok(_) => {
-                    t_send = Some(Instant::now());
-                    _ = stream.readable().await;
-                    match stream.try_read(&mut buffer) {
-                        Err(_) => {ok = false; log("Could not read")}
-                        Ok(_n) => {
-                            t_read = Some(Instant::now());
-                            //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[..n])).as_str());
-                            ok = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let s = Sample {
-        t_connect: t_connect.unwrap_or(t0) - t0,
-        t_send:    t_send.unwrap_or(t0) - t_connect.unwrap_or(t0),
-        t_total:   t_read.unwrap_or(t0) - t0,
-        ok,
-    };
-    return s
-}
-
-async fn _test(worker_id: u32, num_requests: u32, ip_address: &str, tcp_port: u16, requests_per_second: u32) -> Vec<Sample> {
-    println!("Worker {}, making {} requests to {}:{}", worker_id, num_requests, ip_address, tcp_port);
-
-    // let http_request = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", HTTP_HOST).as_bytes();
-    let http_request = b"GET / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
-
-    let mut buffer = [0u8; BUFFER_SIZE];
-
-    let period = 1.0 / requests_per_second as f64;
-    println!("Period: {} Hz", period);
-
-    let mut samples = Vec::with_capacity(num_requests as usize);
-
-    for _i in 0..num_requests {
-        let log = |_s: &str| -> () {println!("Worker {}, request {}: {}", worker_id, _i, _s)};
-
-        let t0 = Instant::now();
-
-        let mut t_connect = None;
-        let mut t_send = None;
-        let mut t_read = None;
-        let ok: bool;
-
-        match TcpStream::connect((ip_address, tcp_port)).await {
-            Err(_) => {ok = false; log("Could not connect")}
-            Ok(mut stream) => {
-                t_connect = Some(Instant::now());
-                match stream.write_all(http_request).await {
-                    Err(_) => {ok = false; log("Could not write")}
-                    Ok(_) => {
-                        t_send = Some(Instant::now());
-                        _ = stream.readable().await;
-                        match stream.try_read(&mut buffer) {
-                            Err(_) => {ok = false; log("Could not read")}
-                            Ok(_n) => {
-                                t_read = Some(Instant::now());
-                                //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[..n])).as_str());
-                                ok = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let s = Sample {
-            t_connect: t_connect.unwrap_or(t0) - t0,
-            t_send:    t_send.unwrap_or(t0) - t_connect.unwrap_or(t0),
-            t_total:   t_read.unwrap_or(t0) - t0,
-            ok,
-        };
-        samples.push(s);
-    }
-    return samples;
 }
 
 fn print_latencies(durations: &Vec<Duration>) {
@@ -241,9 +127,7 @@ fn print_latencies(durations: &Vec<Duration>) {
     println!("Mean: {mean:?}");
 }
 
-//fn print_type_of<T>(_: &T) {println!("{}", std::any::type_name::<T>())}
-
-fn run_thread(initial_request_id: u64, num_requests: u64, frequency: u32, proxy: &Host, target: &Host) -> (Vec<Sample>, Vec<Duration>) {
+fn run_thread(initial_request_id: u64, num_requests: u64, frequency: u32, proxy: Option<&Host>, target: &Host) -> (Vec<Sample>, Vec<Duration>) {
     println!("Starting thread, requests {initial_request_id}-{} at {frequency}/s", initial_request_id + num_requests);
 
     let period = Duration::from_nanos(1_000_000_000 / frequency as u64);
@@ -312,7 +196,8 @@ async fn main() -> () {
     let mut num_requests: u64 = 100_000;
     let mut frequency: u32 = 1_000; // Hz
     let mut time: u32 = 10; // seconds
-    let mut proxy_string: String = "localhost:8080".to_owned();
+    //let mut proxy_string: String = "localhost:8080".to_owned();
+    let mut proxy_string: Option<String> = None;
     let mut target_string: String = "localhost:2222".to_owned();
 
     {
@@ -320,16 +205,17 @@ async fn main() -> () {
         parser.refer(&mut num_requests).add_option(&["-n", "--num-requests"], Store, "Number of requests to send");
         parser.refer(&mut frequency).add_option(&["-f", "--frequency"], Store, "Desired send rate (in Hz)");
         parser.refer(&mut time).add_option(&["--time"], Store, "How long to send requests (in s)");
-        parser.refer(&mut proxy_string).add_option(&["--proxy"], Store,
+        parser.refer(&mut proxy_string).add_option(&["--proxy"], StoreOption,
             "Which HTTP CONNECT proxy to use, if any; e.g. localhost:12345");
         parser.refer(&mut target_string).add_option(&["--target"], Store,
             "Which target to hit; e.g. localhost:12345");
         parser.parse_args_or_exit();
     }
 
-    let proxy = parse_host(&proxy_string).expect("Malformed proxy");
+    //let proxy = parse_host(&proxy_string).expect("Malformed proxy");
+    let proxy = proxy_string.map(|s| parse_host(&s).expect("Malformed proxy"));
     let target = parse_host(&target_string).expect("Malformed target");
-    println!("Proxy: {}", proxy);
+    println!("Proxy: {}", proxy.clone().map_or(String::from("None"), |h| h.to_string()));
     println!("Target: {}", target);
 
     println!("Running at frequency of {frequency} Hz");
@@ -354,7 +240,7 @@ async fn main() -> () {
                 i as u64 * normal_chunk.num_requests,
                 chunk.num_requests,
                 chunk.frequency,
-                &proxy,
+                proxy.as_ref(),
                 &target,
         )));
     }
@@ -382,33 +268,33 @@ async fn main() -> () {
     print_latencies(&actual_times);
 
     let ts_connect: Vec<f64> = samples.iter().map(|s| -> f64 {s.t_connect.as_secs_f64()}).collect();
-    let ts_send   : Vec<f64> = samples.iter().map(|s| -> f64 {s.t_send   .as_secs_f64()}).collect();
+    let ts_send   : Vec<f64> = samples.iter().map(|s| -> f64 {s.t_proxy  .as_secs_f64()}).collect();
     let ts_total  : Vec<f64> = samples.iter().map(|s| -> f64 {s.t_total  .as_secs_f64()}).collect();
 
     let t_connect_avg: f64 = average(&ts_connect);
-    let t_send_avg   : f64 = average(&ts_send);
+    let t_proxy_avg  : f64 = average(&ts_send);
     let t_total_avg  : f64 = average(&ts_total);
 
     let t_connect_stddev: f64 = stddev(&ts_connect);
-    let t_send_stddev   : f64 = stddev(&ts_send);
+    let t_proxy_stddev  : f64 = stddev(&ts_send);
     let t_total_stddev  : f64 = stddev(&ts_total);
 
     let t_connect_max: f64 = ts_connect.iter().fold(0.0, |acc, x| -> f64 {acc.max(*x)});
-    let t_send_max   : f64 = ts_send   .iter().fold(0.0, |acc, x| -> f64 {acc.max(*x)});
+    let t_proxy_max  : f64 = ts_send   .iter().fold(0.0, |acc, x| -> f64 {acc.max(*x)});
     let t_total_max  : f64 = ts_total  .iter().fold(0.0, |acc, x| -> f64 {acc.max(*x)});
 
     let t_connect_min: f64 = ts_connect.iter().fold(f64::INFINITY, |acc, x| -> f64 {acc.min(*x)});
-    let t_send_min   : f64 = ts_send   .iter().fold(f64::INFINITY, |acc, x| -> f64 {acc.min(*x)});
+    let t_proxy_min  : f64 = ts_send   .iter().fold(f64::INFINITY, |acc, x| -> f64 {acc.min(*x)});
     let t_total_min  : f64 = ts_total  .iter().fold(f64::INFINITY, |acc, x| -> f64 {acc.min(*x)});
 
     println!("Average times:");
     println!("Connect: {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_connect_avg, 1e6 * t_connect_stddev, 1e6 * t_connect_max);
-    println!("Send:    {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_send_avg,    1e6 * t_send_stddev   , 1e6 * t_send_max   );
+    println!("Proxy:   {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_proxy_avg,   1e6 * t_proxy_stddev  , 1e6 * t_proxy_max  );
     println!("Total:   {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_total_avg,   1e6 * t_total_stddev  , 1e6 * t_total_max  );
     println!();
     println!("Max. and min. times:");
     println!("Connect: max {:10.3} μs, min {:10.3} μs", 1e6 * t_connect_max, 1e6 * t_connect_min);
-    println!("Send:    max {:10.3} μs, min {:10.3} μs", 1e6 * t_send_max   , 1e6 * t_send_min   );
+    println!("Proxy:   max {:10.3} μs, min {:10.3} μs", 1e6 * t_proxy_max  , 1e6 * t_proxy_min  );
     println!("Total:   max {:10.3} μs, min {:10.3} μs", 1e6 * t_total_max  , 1e6 * t_total_min  );
 
     println!("Total time elapsed: {:?}, {} μs per request", t1 - t0, 1e6 * (t1 - t0).as_secs_f64() / num_requests as f64);
