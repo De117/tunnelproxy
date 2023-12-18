@@ -65,6 +65,9 @@ fn spin_until(t: Instant) -> Duration {
     }
 }
 
+/// Make a request to `target`, optionally going through `proxy` using CONNECT.
+///
+/// Returns a sample: how did things go for this particular request?
 fn make_request(proxy: Option<&Host>, target: &Host) -> Sample {
     let proxy_request = proxy.map(|p| format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, p).into_bytes());
     let http_request = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", target).into_bytes();
@@ -270,8 +273,16 @@ async fn main() -> () {
 
     println!("{num_ok} OK requests, {num_errors} errors");
 
+    println!();
+    println!("Corrected for coordinated omission, we have:");
     print_latencies(&actual_times);
 
+    println!();
+    println!("Without correcting for coordinated omission, we have:");
+    let uncorrected_times: Vec<Duration> = samples.iter().map(|s| s.t_total).collect();
+    print_latencies(&uncorrected_times);
+
+    // Some more detailed statistics
     let ts_connect: Vec<f64> = samples.iter().map(|s| -> f64 {s.t_connect.as_secs_f64()}).collect();
     let ts_send   : Vec<f64> = samples.iter().map(|s| -> f64 {s.t_proxy  .as_secs_f64()}).collect();
     let ts_total  : Vec<f64> = samples.iter().map(|s| -> f64 {s.t_total  .as_secs_f64()}).collect();
@@ -292,15 +303,12 @@ async fn main() -> () {
     let t_proxy_min  : f64 = ts_send   .iter().fold(f64::INFINITY, |acc, x| -> f64 {acc.min(*x)});
     let t_total_min  : f64 = ts_total  .iter().fold(f64::INFINITY, |acc, x| -> f64 {acc.min(*x)});
 
-    println!("Average times:");
-    println!("Connect: {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_connect_avg, 1e6 * t_connect_stddev, 1e6 * t_connect_max);
-    println!("Proxy:   {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_proxy_avg,   1e6 * t_proxy_stddev  , 1e6 * t_proxy_max  );
-    println!("Total:   {:10.3} μs (σ {:10.3} μs, max {:10.3} μs)", 1e6 * t_total_avg,   1e6 * t_total_stddev  , 1e6 * t_total_max  );
     println!();
-    println!("Max. and min. times:");
-    println!("Connect: max {:10.3} μs, min {:10.3} μs", 1e6 * t_connect_max, 1e6 * t_connect_min);
-    println!("Proxy:   max {:10.3} μs, min {:10.3} μs", 1e6 * t_proxy_max  , 1e6 * t_proxy_min  );
-    println!("Total:   max {:10.3} μs, min {:10.3} μs", 1e6 * t_total_max  , 1e6 * t_total_min  );
+    println!("Per \"stage\" of a request:");
+    println!("TCP connect: mean {:8.3} μs, σ {:8.3} μs, min {:8.3} μs, max {:8.3} μs", 1e6 * t_connect_avg, 1e6 * t_connect_stddev, 1e6 * t_connect_min, 1e6 * t_connect_max);
+    println!("Proxy:       mean {:8.3} μs, σ {:8.3} μs, min {:8.3} μs, max {:8.3} μs", 1e6 * t_proxy_avg,   1e6 * t_proxy_stddev  , 1e6 * t_proxy_min  , 1e6 * t_proxy_max  );
+    println!("Total:       mean {:8.3} μs, σ {:8.3} μs, min {:8.3} μs, max {:8.3} μs", 1e6 * t_total_avg,   1e6 * t_total_stddev  , 1e6 * t_total_min  , 1e6 * t_total_max  );
 
+    println!();
     println!("Total time elapsed: {:?}, {} μs per request", t1 - t0, 1e6 * (t1 - t0).as_secs_f64() / num_requests as f64);
 }
