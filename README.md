@@ -23,8 +23,12 @@ For example of (2), see `tunnelproxy/__main__.py`.
 
 
 # Performance
-The proxy is single-threaded. On an Intel i7-7700HQ @ 2.80GHz, it handles ~560
-connections per second. Not much, but enough for many use cases.
+The proxy is single-threaded.
+
+On an AMD Ryzen 9 7900, it handles 1000 connections per second at <5ms maximal
+latency, as measured on a 10s burst. (See `benchmark` for details.)
+
+It's not much, but enough for many use cases.
 
 
 # License

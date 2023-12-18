@@ -65,13 +65,11 @@ fn spin_until(t: Instant) -> Duration {
     }
 }
 
-fn make_request(request_id: &str, proxy: Option<&Host>, target: &Host) -> Sample {
+fn make_request(proxy: Option<&Host>, target: &Host) -> Sample {
     let proxy_request = proxy.map(|p| format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, p).into_bytes());
     let http_request = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", target).into_bytes();
 
     let mut buffer = [0u8; BUFFER_SIZE];
-
-    //let log = |_s: &str| -> () {println!("Request {}: {}", request_id, _s)};
 
     let t0 = Instant::now();
 
@@ -89,12 +87,10 @@ fn make_request(request_id: &str, proxy: Option<&Host>, target: &Host) -> Sample
             stream.write_all(proxy_request.unwrap().as_slice())?;
             let _n = stream.read(&mut buffer)?;
             t_proxy = Some(Instant::now());
-            //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[.._n])).as_str());
         }
         stream.write_all(http_request.as_slice())?;
         let _n = stream.read(&mut buffer)?;
         t_total = Some(Instant::now());
-        //log(format!("Read {} bytes: {:?}", _n, std::str::from_utf8(&buffer[.._n])).as_str());
 
         Ok(true) as Result<bool, std::io::Error>
     })().unwrap_or(false);
@@ -127,16 +123,16 @@ fn print_latencies(durations: &Vec<Duration>) {
     println!("Mean: {mean:?}");
 }
 
-fn run_thread(initial_request_id: u64, num_requests: u64, frequency: u32, proxy: Option<&Host>, target: &Host) -> (Vec<Sample>, Vec<Duration>) {
-    println!("Starting thread, requests {initial_request_id}-{} at {frequency}/s", initial_request_id + num_requests);
+fn run_thread(initial_request_index: u64, num_requests: u64, frequency: u32, proxy: Option<&Host>, target: &Host) -> (Vec<Sample>, Vec<Duration>) {
+    println!("Starting thread, requests {initial_request_index}-{} at {frequency}/s", initial_request_index + num_requests);
 
     let period = Duration::from_nanos(1_000_000_000 / frequency as u64);
     let mut actual_times = Vec::<Duration>::with_capacity(num_requests as usize);
     let mut samples = Vec::<Sample>::with_capacity(num_requests as usize);
 
     let mut scheduled_at = Instant::now();
-    for i in 0..num_requests {
-        let sample = make_request(&format!("{}", initial_request_id + i), proxy, target);
+    for _ in 0..num_requests {
+        let sample = make_request(proxy, target);
         actual_times.push(Instant::now() - scheduled_at);
         samples.push(sample);
         scheduled_at += period;
@@ -193,36 +189,45 @@ fn calculate_chunks(max_frequency_per_thread: u32, frequency: u32, num_requests:
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> () {
 
-    let mut num_requests: u64 = 100_000;
     let mut frequency: u32 = 1_000; // Hz
-    let mut time: u32 = 10; // seconds
-    //let mut proxy_string: String = "localhost:8080".to_owned();
-    let mut proxy_string: Option<String> = None;
+    let mut maybe_num_requests: Option<u64> = None;
+    let mut maybe_time: Option<u32> = None; // seconds
+    let mut maybe_proxy_string: Option<String> = None;
     let mut target_string: String = "localhost:2222".to_owned();
 
     {
         let mut parser = ArgumentParser::new();
-        parser.refer(&mut num_requests).add_option(&["-n", "--num-requests"], Store, "Number of requests to send");
-        parser.refer(&mut frequency).add_option(&["-f", "--frequency"], Store, "Desired send rate (in Hz)");
-        parser.refer(&mut time).add_option(&["--time"], Store, "How long to send requests (in s)");
-        parser.refer(&mut proxy_string).add_option(&["--proxy"], StoreOption,
-            "Which HTTP CONNECT proxy to use, if any; e.g. localhost:12345");
-        parser.refer(&mut target_string).add_option(&["--target"], Store,
-            "Which target to hit; e.g. localhost:12345");
+        parser.refer(&mut maybe_num_requests).add_option(&["-n", "--num-requests"], StoreOption, "Number of requests to send");
+        parser.refer(&mut frequency         ).add_option(&["-f", "--frequency"], Store, "Desired send rate (in Hz)");
+        parser.refer(&mut maybe_time        ).add_option(&["--time"], StoreOption, "How long to send requests (in s)");
+        parser.refer(&mut maybe_proxy_string).add_option(&["--proxy"], StoreOption, "Which HTTP CONNECT proxy to use, if any; e.g. localhost:12345");
+        parser.refer(&mut target_string     ).add_option(&["--target"], Store, "Which target to hit; e.g. localhost:12345");
         parser.parse_args_or_exit();
     }
 
-    //let proxy = parse_host(&proxy_string).expect("Malformed proxy");
-    let proxy = proxy_string.map(|s| parse_host(&s).expect("Malformed proxy"));
+    let num_requests: u64;
+    if maybe_time == None && maybe_num_requests == None {
+        eprintln!(concat!(
+            "Error parsing command line arguments: ",
+            "Either time or number of requests must be specified!",
+        ));
+        std::process::exit(1);
+    } else if maybe_time == None {
+        num_requests = maybe_num_requests.unwrap();
+    } else {
+        num_requests = (maybe_time.unwrap() * frequency) as u64;
+    }
+
+    let proxy = maybe_proxy_string.map(|s| parse_host(&s).expect("Malformed proxy"));
     let target = parse_host(&target_string).expect("Malformed target");
     println!("Proxy: {}", proxy.clone().map_or(String::from("None"), |h| h.to_string()));
     println!("Target: {}", target);
 
     println!("Running at frequency of {frequency} Hz");
 
-    // For _our_ testing, on localhost, 10kHz should be doable, but not much more.
+    // For _our_ testing, on localhost, 5kHz (=200μs per connection) should be doable.
     let (num_threads, normal_chunk, last_chunk) =
-        calculate_chunks(10_000, frequency, num_requests);
+        calculate_chunks(5_000, frequency, num_requests);
 
     println!("num_threads: {num_threads}");
 
