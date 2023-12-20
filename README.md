@@ -1,4 +1,4 @@
-# A small whitelisting HTTP CONNECT proxy
+# TunnelProxy: A small whitelisting HTTP CONNECT proxy
 This is a small HTTP CONNECT proxy, with a target host whitelist.
 
 Implemented in Python on top of [trio][1] and [h11][2], it is written for ease
