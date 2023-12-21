@@ -189,8 +189,7 @@ fn calculate_chunks(max_frequency_per_thread: u32, frequency: u32, num_requests:
     );
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> () {
+fn main() -> () {
 
     let mut frequency: u32 = 1_000; // Hz
     let mut maybe_num_requests: Option<u64> = None;
