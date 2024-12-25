@@ -225,8 +225,7 @@ async def test_connect_to_whitelisted_host(domains: Set[Domain]) -> None:
     #   you should have access (200 OK)
     with trio.socket.socket() as sock:
         await sock.bind(("localhost", 0))
-        sock.listen()  # type: ignore
-        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+        sock.listen()
 
         _, port = sock.getsockname()
         host: Domain = random.choice(list(domains))
@@ -290,8 +289,7 @@ async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], a
     #      UNIX-like systems, we can ensure a slow TCP handshake.
     with trio.socket.socket() as sock:
         await sock.bind(("localhost", 0))
-        sock.listen(0)  # type: ignore
-        # (As of trio-typing 0.7.0, the type for listen() is wrong.)
+        sock.listen(0)
 
         _, port = sock.getsockname()
         host: Domain = random.choice(list(domains))
@@ -376,6 +374,6 @@ async def test_connect_with_random_input(domains: Set[Domain], port: Port) -> No
 
     client_stream, proxy_stream = trio.testing.memory_stream_pair()
     async with trio.open_nursery() as nursery:
-        # As of trio-typing 0.7.0, start_soon's type signature only supports up to 5 arguments.
+        # As of trio-typing 0.10.0, start_soon's type signature only supports up to 5 arguments.
         nursery.start_soon(connect_with_bytes, client_stream, host, port, expected, random_bytes)  # type: ignore
         nursery.start_soon(handle, proxy_stream, is_whitelisted)

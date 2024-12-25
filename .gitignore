@@ -3,3 +3,4 @@
 .hypothesis/
 
 benchmark/*-rust/target/
+venv*/
