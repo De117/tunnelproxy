@@ -30,6 +30,8 @@ latency, as measured on a 10s burst. (See [benchmarking][5] for details.)
 
 It's not much, but enough for many use cases.
 
+# Changelog
+See [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 # License
 This project is [MIT licensed][3]. `TrioHTTPConnection` from `adapter.py` is
