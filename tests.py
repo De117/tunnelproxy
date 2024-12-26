@@ -3,15 +3,15 @@ import trio.testing, pytest
 from datetime import timedelta
 from functools import partial, wraps
 from hypothesis import given, settings, HealthCheck, assume
-from hypothesis.strategies import data, integers, binary, floats, lists, builds, sets, tuples, sampled_from
+from hypothesis.strategies import data, integers, binary, floats, lists, builds, sets, tuples, sampled_from, randoms
 
 from typing import Set, Tuple, List, Callable
 
 from tunnelproxy._proxy import splice
 
 
-@given(integers(1, 100), data())
-async def test_splice(num_iterations: int, data):
+@given(integers(1, 100), data(), randoms())
+async def test_splice(num_iterations: int, data, rand: random.Random):
     client, near = trio.testing.memory_stream_pair()
     far, server = trio.testing.memory_stream_pair()
     
@@ -20,7 +20,7 @@ async def test_splice(num_iterations: int, data):
 
     async def testit(a, b):
         for i in range(num_iterations):
-            a, b = random.sample((a, b), k=2)  # global random, deterministic by hypothesis
+            a, b = rand.sample((a, b), k=2)
 
             to_send = data.draw(binary(min_size=1))  # we must send something or receive_some will block
             await a.send_all(to_send)
@@ -28,7 +28,7 @@ async def test_splice(num_iterations: int, data):
 
             assert to_send == received
 
-        a, b = random.sample((a, b), k=2)
+        a, b = rand.sample((a, b), k=2)
         await a.aclose()  # kill one end, the rest should take care of itself
 
 
@@ -104,7 +104,7 @@ from tunnelproxy._config import Domain, Port
 ################################################################
 #            Generating valid domains and ports
 ################################################################
-def new_label(length: int) -> str:
+def new_label(length: int, rand: random.Random) -> str:
     """
     Return a "label" element according to RFC 1035, of specified length (>0).
     """
@@ -115,15 +115,15 @@ def new_label(length: int) -> str:
     letter_digit_hyphen = letter_digit + "-"
 
     if length == 1:
-        label = random.choice(letter)
+        label = rand.choice(letter)
     else:
-        label = (random.choice(letter)
-            + "".join(random.choice(letter_digit_hyphen) for _ in range(length - 2))
-            + random.choice(letter_digit)
+        label = (rand.choice(letter)
+            + "".join(rand.choice(letter_digit_hyphen) for _ in range(length - 2))
+            + rand.choice(letter_digit)
         )
     return label
 
-def new_domain(chunk_lengths: List[int]) -> Domain:
+def new_domain(chunk_lengths: List[int], rand: random.Random) -> Domain:
     """
     Return a valid domain according to RFC 1035.
 
@@ -132,10 +132,10 @@ def new_domain(chunk_lengths: List[int]) -> Domain:
     if not chunk_lengths or any(l <= 0 for l in chunk_lengths):
         raise ValueError()
 
-    return Domain(".".join(new_label(l) for l in chunk_lengths))
+    return Domain(".".join(new_label(l, rand) for l in chunk_lengths))
 
 def domains():
-    return builds(new_domain, lists(integers(1, 10), min_size=1, max_size=10))
+    return builds(new_domain, lists(integers(1, 10), min_size=1, max_size=10), randoms())
 
 def ports(start: int = 1024, end: int = 65535):
     return builds(Port, integers(start, end))
@@ -215,9 +215,9 @@ async def accept_and_close_connection(s: trio.socket.SocketType) -> None:
 #               Actual tests for handle()
 ################################################################
 
-@given(domains=sets(domains(), min_size=1))
+@given(domains=sets(domains(), min_size=1), rand=randoms())
 @resolve_all_to_localhost
-async def test_connect_to_whitelisted_host(domains: Set[Domain]) -> None:
+async def test_connect_to_whitelisted_host(domains: Set[Domain], rand: random.Random) -> None:
 
     expected = b"HTTP/1.1 200"
 
@@ -228,7 +228,7 @@ async def test_connect_to_whitelisted_host(domains: Set[Domain]) -> None:
         sock.listen()
 
         _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
+        host: Domain = rand.choice(list(domains))
 
         whitelist = {(d, port) for d in domains}
         is_whitelisted = lambda host, port: (host, port) in whitelist
@@ -257,15 +257,15 @@ async def test_connect_to_non_whitelisted_host(domains: Set[Domain], port: Port)
         nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1), port=ports())
+@given(domains=sets(domains(), min_size=1), port=ports(), rand=randoms())
 @resolve_all_to_localhost
-async def test_connect_to_whitelisted_nonexistent_upstream_host(domains: Set[Domain], port: Port) -> None:
+async def test_connect_to_whitelisted_nonexistent_upstream_host(domains: Set[Domain], port: Port, rand: random.Random) -> None:
 
     expected = b"HTTP/1.1 502"
 
     # Connect to a whitelisted, but non-existent upstream:
     #   you should get back a 502 error (if upstream is down)
-    host: Domain = random.choice(list(domains))
+    host: Domain = rand.choice(list(domains))
     whitelist = {(d, port) for d in domains}
     is_whitelisted = lambda host, port: (host, port) in whitelist
 
@@ -275,10 +275,10 @@ async def test_connect_to_whitelisted_nonexistent_upstream_host(domains: Set[Dom
         nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1))
+@given(domains=sets(domains(), min_size=1), rand=randoms())
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @resolve_all_to_localhost
-async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], autojump_clock) -> None:
+async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], rand: random.Random, autojump_clock) -> None:
 
     expected = b"HTTP/1.1 504"
 
@@ -292,7 +292,7 @@ async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], a
         sock.listen(0)
 
         _, port = sock.getsockname()
-        host: Domain = random.choice(list(domains))
+        host: Domain = rand.choice(list(domains))
 
         # Setting the listen backlog to 0 does not actually set the
         # number of pending TCP connections to 0, but it comes close.
@@ -318,16 +318,16 @@ async def test_connect_to_whitelisted_slow_upstream_host(domains: Set[Domain], a
             nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1), port=ports())
+@given(domains=sets(domains(), min_size=1), port=ports(), rand=randoms())
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @resolve_all_to_localhost
-async def test_connect_where_client_times_out(domains: Set[Domain], port: Port, autojump_clock) -> None:
+async def test_connect_where_client_times_out(domains: Set[Domain], port: Port, rand: random.Random, autojump_clock) -> None:
 
     expected = b"HTTP/1.1 408"
 
     # Anything else should fail with a 4xx error
     #   client timeouts: 408 (Too Slow)
-    host: Domain = random.choice(list(domains))
+    host: Domain = rand.choice(list(domains))
     whitelist = {(d, port) for d in domains}
     is_whitelisted = lambda host, port: (host, port) in whitelist
 
@@ -339,15 +339,15 @@ async def test_connect_where_client_times_out(domains: Set[Domain], port: Port, 
 
 HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"]
 
-@given(domains=sets(domains(), min_size=1), port=ports(), method=sampled_from(HTTP_METHODS + ["DJWAODUIJAW"]))
+@given(domains=sets(domains(), min_size=1), port=ports(), method=sampled_from(HTTP_METHODS + ["DJWAODUIJAW"]), rand=randoms())
 @resolve_all_to_localhost
-async def test_connect_with_bad_method(domains: Set[Domain], port: Port, method: str) -> None:
+async def test_connect_with_bad_method(domains: Set[Domain], port: Port, method: str, rand: random.Random) -> None:
 
     assume(method != "CONNECT")
     expected = b"HTTP/1.1 405"
 
     #   bad method: 405 (Not Allowed)
-    host: Domain = random.choice(list(domains))
+    host: Domain = rand.choice(list(domains))
     whitelist = {(d, port) for d in domains}
     is_whitelisted = lambda host, port: (host, port) in whitelist
 
@@ -357,18 +357,18 @@ async def test_connect_with_bad_method(domains: Set[Domain], port: Port, method:
         nursery.start_soon(handle, proxy_stream, is_whitelisted)
 
 
-@given(domains=sets(domains(), min_size=1), port=ports())
+@given(domains=sets(domains(), min_size=1), port=ports(), rand=randoms())
 @resolve_all_to_localhost
-async def test_connect_with_random_input(domains: Set[Domain], port: Port) -> None:
+async def test_connect_with_random_input(domains: Set[Domain], port: Port, rand: random.Random) -> None:
 
     expected = b"HTTP/1.1 400"
 
     #   malformed request: 400 (Bad Request)
-    random_length = random.randint(0, 100)
-    random_bytes = bytes(random.getrandbits(8) for _ in range(random_length))
+    random_length = rand.randint(0, 100)
+    random_bytes = bytes(rand.getrandbits(8) for _ in range(random_length))
     random_bytes += b"\r\n\r\n"  # we must terminate the line, or the server will time out
 
-    host: Domain = random.choice(list(domains))
+    host: Domain = rand.choice(list(domains))
     whitelist = {(d, port) for d in domains}
     is_whitelisted = lambda host, port: (host, port) in whitelist
 
