@@ -46,5 +46,6 @@ setuptools.setup(
     project_urls={
         "Source": "https://github.com/De117/tunnelproxy",
         "Tracker": "https://github.com/De117/tunnelproxy/issues",
+        "Changelog": "https://github.com/De117/tunnelproxy/blob/master/docs/CHANGELOG.md",
     },
 )
