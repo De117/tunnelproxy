@@ -10,7 +10,7 @@ setuptools.setup(
     name="tunnelproxy",
     version=__version__,
     install_requires=[
-        "trio >=0.24, <0.29",
+        "trio >=0.24, <0.31",
         "h11 ~=0.14.0",
     ],
     python_requires=">=3.9",
